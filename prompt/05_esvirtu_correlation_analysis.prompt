@@ -1,0 +1,13 @@
+ok ,here is you need to do ,first ,comment all things in sparcc part , and also comment related rule all . than, insert  rules after rule spearman_all_vs_all. 
+ Here is you need to do:
+ for result subspecies.all_vs_all.spearman.filtered.tsv
+species.all_vs_all.spearman.filtered.tsv in folder ,result/05_esvirtu_correlation_analysis/2_all_vs_all. you need to do filtration, and save them in result/05_esvirtu_correlation_analysis/3_spearman_analysis/{species,subspecies}.
+each have 2 file as following pattern and save them in coreespoingding folder
+
+pattern 1: all known virus to known virus pair. and for cut of threadshold at above  0.6, 0.7,0.8,0.9 each one has a file, this pattern should be saved in result/05_esvirtu_correlation_analysis/3_spearman_analysis/{species,subspecies}/known_known_pair
+
+pattern 2: all known virus to unknown virus pair. and for cut of threadshold at above 0.6, 0.7,0.8,0.9 each one has a file, this pattern should be saved in result/05_esvirtu_correlation_analysis/3_spearman_analysis/{species,subspecies}/known_unknown_pair. For this pattern, you have to add a new column, which is the removal "unknown::acc:", For example, unknown::acc:AnQing_D_33_0000002790 should be AnQing_D_33_0000002790
+
+
+
+

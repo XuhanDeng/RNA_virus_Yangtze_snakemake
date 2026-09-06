@@ -1,0 +1,62 @@
+
+RULE A:
+Here is the fllowing step you need to do for the 03_RDRP_identification.smk, 
+you can see under the folder result_fake/03_RDRP_identification, 3 file here 
+use puthon script , put it in sciprt/03_RDRP_identification folder
+
+First you need generate a table.csv, it has different column
+1. for example , 03_RDRP_identification/1_RdRpCATCH/AnQing_D_33/AnQing_D_33_scaffolds_rename_1000_rdrpcatch_output_annotated.tsv is one of result after the 1_RdRpCATCH
+
+2. this step run based on the last step of previous step. you need merge them 03_RDRP_identification/2_palmscan/AnQing_D_33/AnQing_D_33_palmscan_hits.tsv. the reference column is Label column, and  here is an example , AnQing_D_33_0000000002_frame=-1_RdRp_1410-1766 . you need add another two column named RdRp _tart and RDRP_end, and the valude should be 1410 and 1766 in this example.
+
+
+3. lucaprot is the last one in 03_RDRP_identification/3_lucaprot/AnQing_D_33/RdRPs_only_using_threshold0.500000.csv. and here is the pattern of it name on column protein_id, as shown >lcl|ORF9_AnQing_D_33_0000000002:8171:2670 unnamed protein product
+you need use pd.merge with previous result, if it does not shown in previous result, you need add it , and keep previous column as NA. oh, you also need add two colomn of lucaprot_orf_start and lucaprot_orf_end, 8171 and 2670 for example 
+
+4.three new column you need add , RdRpCATCH,palmscan and lucaprot, use yes/no to show whether this contig is idneitied bu corresponding method, for yes/no for palmscan, use this column palmscan_pssm_ABC, if this column has three letter (ABC or CAB) it yes , if not , it no
+
+
+
+after finish the previous "total table", i need following contig name list, as following:, in new 3 column, if all yes :High-confidence_RdRp.txt only RdRpCatch yes:  RDRPCatch_only.list. RdRpCatch&palmsscan yes :RDRPCatch_palmscan.txt. Last, If lucaprot column is yes, should be :lucaprot.txt and sum one(each one identified is fine, i am not sure what name of this file ,you decide, endwith .txt)
+
+
+
+
+Rule B : 
+all file generate in. this. step should be saved in result/03_RDRP_identification/5_RdRp_contig
+
+ok , based on the .txt from last step,  First , you need to cat file  under result/02_RNA_virus_assembly/4_rename_assembly/rename_1000 together and then, use seqkit extract them. to coreespoingding file.
+
+
+
+RuleC: do same thing for ICTV as previous(including a and b), but all result should be saved in result/03_RDRP_identification/6_ICTV_contig
+
+
+
+
+
+
+Logic change.
+After RDRPcatch and Lucaprot, we do palmscan to both of them to there result, The RDRPcatch input for palmscan not change , but for lucaprot result ,input is :result/03_RDRP_identification/3_lucaprot/QutangGorge_M_7/RdRPs_only_using_threshold0.500000.csv
+ the for mat of this  file protein_id,seq,prob,label
+">lcl|ORF3_QutangGorge_M_7_0000000106:1301:234 unnamed protein product, partial",PGGRIISDDISAFDLSVHIVHQLALSRHYTKVLKRAGYAHTDSAIRCYLQQTRMSVLGPPQKSVSISRSDTEVTVESPFHYALVEREGTTPSGSVYTIADGSCINMARCVYALTRSVTHLRTMSTAAACERVMSDIKRGTLLVFIAGDDTLLALPLSYAVDEDEYKAASRAFGFDCKLMGDPIFLMQAMAMPGTPGPYGLISRFTQQRLFRERPRHDERVELLALATSLDRFSLNPRFNDYLRLFEPWMRERFNVTYASLMLDLRAGLLVTSAMQDVDSFRSYALSLLRGDVSVANIRASARLLGLDAYQVEKLADLLLARGLHSPEAALLQERASITEEDARRAMQRMAERGFR,0.9999157190322876,1
+
+
+each RDRPcatch only have one rdrp region for one contig, but for lucaprot , it may have two region. separate them. Than check the region overlap between , if they overlap >over 50%, we think it same rdrp, otherwise , they are two different rdrp region on one contig, If they are same region, use RDRPcatch result as it RDRP_region. The RDRP region with overlap<50% would be lucaprot_only.
+
+
+High-confidence_rdrp should be RdRpCATCH   palmscan   lucaprot  both yes, and same RDRP region, but if one rdrp in a contig in rdrp region is 3 yes , and it contain another rdrp only identified by lucaprot, this contig still High-confidence_RdRp
+
+
+
+
+
+
+RdRpCATCH   palmscan   lucaprot   lucaprot_palmscan   → category
+──────────────────────────────────────────────────────────────────
+yes         yes        yes        *                   → High-confidence_RdRp
+yes         yes        no         *                   → RDRPCatch_palmscan
+yes         no         yes        *                   → RDRPCatch_lucaprot
+yes         no         no         *                   → RDRPCatch_only
+no          no         yes        yes (ABC motif)     → lucaprot_palmscan
+no          no         yes        no  (no ABC motif)  → lucaprot_only

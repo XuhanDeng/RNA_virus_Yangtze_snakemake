@@ -1,0 +1,9 @@
+This project is for Identify RNA virus my contigs from my Yantze River RNA virals samples, I want to write a snakemake format script to make others guys can re-use it easly, 
+
+I will not just write a extremely long Snakefile , I will write multiple .smk files. I have not decide where to set the checkpoint. 
+
+All *.smk file will be saved in the workflow folder, and For database, It will be used as save sequence downloaded from ICTV/previously publication database.
+
+
+ 
+

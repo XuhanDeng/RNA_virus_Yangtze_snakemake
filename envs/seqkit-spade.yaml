@@ -1,0 +1,7 @@
+name: seqkit
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - seqkit=2.8.2
+  - spades=4.2.0

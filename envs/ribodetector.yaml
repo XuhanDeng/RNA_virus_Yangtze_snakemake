@@ -1,0 +1,6 @@
+name: ribodetector
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - ribodetector=0.3.3

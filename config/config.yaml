@@ -1,0 +1,1060 @@
+# ============================================================
+# Yangtze River RNA Virus Metagenomics Pipeline
+# Unified configuration file
+# ============================================================
+
+palm_annot_install:
+  install_dir: "tools/palm_annot"
+  url: "https://github.com/rcedgar/palm_annot"
+
+# ============================================================
+# SHARED PARAMETERS
+# Used by: 01_bacteria_genome_assembly, 02_RNA_virus_assembly
+# ============================================================
+account: "research-ceg-wm"
+regular_partition: "compute-p1,compute-p2"
+regular_memory: 3968  # MB per CPU
+
+# Lightweight jobs: parsing, merging, filtering scripts with minimal CPU/RAM
+small_job:
+  memory:    3968   # MB per CPU
+  threads:   2
+  runtime:   200     # minutes
+  partition: "compute-p1,compute-p2"
+  account:   "research-ceg-wm"
+read_length: 150      # Read length in bp for coverage calculation
+
+
+
+scripts:
+  ref_cluster_select_assembly_only: "scripts/04_modified_esvirtue/Ref_cluster_select_assembly_only.py"
+  merge_es_tsv_assembly_only:       "scripts/04_modified_esvirtue/merge_es_tsv_assembly_only.py"
+  esviritu_merge_rpkmf:             "scripts/04_modified_esvirtue/esviritu_merge_rpkmf.py"
+  checkv_ani:                       "scripts/04_modified_esvirtue/checkv/anicalc.py"
+  checkv_clust:                     "scripts/04_modified_esvirtue/checkv/aniclust.py"
+
+  esviritu_subspecies_correlation:          "scripts/05_esviritu/esviritu_subspecies_correlation_v2.py"
+  spearman_all_vs_all:                       "scripts/05_esviritu/spearman_all_vs_all.py"
+  prepare_fastspar_input:                    "scripts/05_esviritu/prepare_fastspar_input.py"
+  parse_fastspar_output:                     "scripts/05_esviritu/parse_fastspar_output.py"
+
+  merge_rdrp_results:               "scripts/03_RDRP_identification/merge_rdrp_results.py"
+  combine_rdrp_all_samples:         "scripts/03_RDRP_identification/combine_rdrp_all_samples.py"
+  write_protein_id_lists:           "scripts/03_RDRP_identification/write_protein_id_lists.py"
+
+
+
+
+
+
+# Samples for 01_bacteria_genome_assembly (49 samples, includes GYG_N_0)
+bacteria_samples:
+  - GYG_N_0
+  - GouBa_N_1
+  - HGMT_N_0
+  - WuRiver_U_2
+  - WuRiver_D_3
+  - RuXiRiver_N_4
+  - WanZhou_N_5
+  - QutangGorge_U_6
+  - QutangGorge_M_7
+  - WuGorge_U_8
+  - WuGorge_M_9
+  - TGR_U_10
+  - TGR_Ma_11
+  - TGR_Mb_12
+  - TGR_Mc_13
+  - TGR_D_14
+  - YiChang_U_15
+  - YiChang_D_16
+  - QingRiver_U_17
+  - JingZhou_U_18
+  - JingZhou_D_19
+  - TiaoguanTown_N_20
+  - DongtingLake_U_21
+  - DongtingLake_M_22
+  - DongtingLake_D_23
+  - WuHan_U_24
+  - WuHan_M_25
+  - WuHan_D_26
+  - HuangShi_N_27
+  - ChangGang_N_28
+  - JiuJiang_U_29
+  - JiuJiang_M_30
+  - JiuJiang_D_31
+  - AnQing_U_32
+  - AnQing_D_33
+  - TongLing_U_34
+  - TongLing_D_35
+  - WuHu_U_36
+  - WuHu_D_37
+  - MaAnShan_N_38
+  - NanJing_U_39
+  - NanJing_D_40
+  - YangZhou_N_41
+  - ZhenJiang_N_42
+  - ChangZhou_N_43
+  - JiangYin_N_44
+  - NanTong_U_45
+  - NanTong_D_46
+  - ChangShu_N_47
+  - TaiCang_N_48
+
+# Samples for 02_RNA_virus_assembly and downstream workflows (48 samples)
+rna_samples:
+  - GouBa_N_1
+  - WuRiver_U_2
+  - WuRiver_D_3
+  - RuXiRiver_N_4
+  - WanZhou_N_5
+  - QutangGorge_U_6
+  - QutangGorge_M_7
+  - WuGorge_U_8
+  - WuGorge_M_9
+  - TGR_U_10
+  - TGR_Ma_11
+  - TGR_Mb_12
+  - TGR_Mc_13
+  - TGR_D_14
+  - YiChang_U_15
+  - YiChang_D_16
+  - QingRiver_U_17
+  - JingZhou_U_18
+  - JingZhou_D_19
+  - TiaoguanTown_N_20
+  - DongtingLake_U_21
+  - DongtingLake_M_22
+  - DongtingLake_D_23
+  - WuHan_U_24
+  - WuHan_M_25
+  - WuHan_D_26
+  - HuangShi_N_27
+  - ChangGang_N_28
+  - JiuJiang_U_29
+  - JiuJiang_M_30
+  - JiuJiang_D_31
+  - AnQing_U_32
+  - AnQing_D_33
+  - TongLing_U_34
+  - TongLing_D_35
+  - WuHu_U_36
+  - WuHu_D_37
+  - MaAnShan_N_38
+  - NanJing_U_39
+  - NanJing_D_40
+  - YangZhou_N_41
+  - ZhenJiang_N_42
+  - ChangZhou_N_43
+  - JiangYin_N_44
+  - NanTong_U_45
+  - NanTong_D_46
+  - ChangShu_N_47
+  - TaiCang_N_48
+
+
+# ============================================================
+# 00_setup_RNA_database.smk
+# ============================================================
+setup_log_dir: "log/00_setup_RNA_database"
+
+sortmerna_db:
+  dir: "database/sortmerna"
+  smr_default_url:   "https://github.com/biocore/sortmerna/releases/download/v4.3.7/smr_v4.3_default_db.fasta.gz"
+  smr_fast_url:      "https://github.com/biocore/sortmerna/releases/download/v4.3.7/smr_v4.3_fast_db.fasta.gz"
+  smr_sensitive_url: "https://github.com/biocore/sortmerna/releases/download/v4.3.7/smr_v4.3_sensitive_db.fasta.gz"
+  smr_rfam_url:      "https://github.com/biocore/sortmerna/releases/download/v4.3.7/smr_v4.3_sensitive_db_rfam_seeds.fasta.gz"
+
+
+
+
+RVMT:
+  url: "https://zenodo.org/records/7368133/files/RVMT_Zenodo_V4.zip?download=1"
+  zip: "database/RVMT_Zenodo_V4.zip"
+  dir: "database/RVMT/RVMT_Zenodo_V4"
+
+# DIAMOND blastp taxonomy assignment against the RVMT RCR90 RdRp reference set,
+# replacing rdrpcatch's built-in mmseqs2-based taxonomy step.
+rvmt_diamond_tax:
+  rdrp_fasta: "database/RVMT/RVMT_Zenodo_V4/RVMT_Zenodo_V4/RdRPs/Simplified_RdRPs/RdRPs_ali822x.faa"
+  info_tsv:   "database/RVMT/RVMT_Zenodo_V4/RVMT_Zenodo_V4/Tables/RiboV1.6_Info.tsv"
+  dmnd_db:    "database/RVMT/RVMT_Zenodo_V4/RVMT_Zenodo_V4/RdRPs/Simplified_RdRPs/rvmt_rdrp_diamond.dmnd"
+  evalue: "1e-5"
+  max_target_seqs: 10
+  threads: 8
+  runtime: 360          # minutes (6 hours)
+  memory: 3968          # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+ICTV:
+  use: True            # set true to include ICTV Riboviria in RdRP identification
+  vmr_url: "https://ictv.global/vmr/current"
+  vmr_xlsx: "database/ICTV/VMR_latest.xlsx"
+  vmr_sheet: "VMR MSL41"
+  realm_filter: "Riboviria"
+  coverage_filter:
+    - "Complete genome"
+    - "Coding-complete genome"
+  accessions_txt: "database/ICTV/Riboviria_accessions.txt"
+  fasta: "database/ICTV/Riboviria_sequences.fasta"
+
+# VMR used to annotate GeNomad virus hits with ICTV taxonomy + genome composition
+ICTV_VMR:
+  url: "https://ictv.global/sites/default/files/VMR/VMR_19-250422_MSL37.xlsx"
+  xlsx: "database/ICTV/VMR_19-250422_MSL37.xlsx"
+  sheet: "VMR 19 MSL37"
+
+esviritu_db:
+  url: "https://zenodo.org/records/17716199/files/esviritu_db_v3.2.4.tar.gz"
+  tar: "database/esviritu/esviritu_db_v3.2.4.tar.gz"
+  dir: "database/esviritu/v3.2.4"
+
+kraken2_db:
+  url: "https://genome-idx.s3.amazonaws.com/kraken/k2_standard_20260226.tar.gz"
+  tar: "database/kraken2/k2_standard_20260226.tar.gz"
+  dir: "database/kraken2/k2_standard_20260226"
+
+virushostdb:
+  url: "https://www.genome.jp/ftp/db/virushostdb/virushostdb.tsv"
+  tsv: "database/virushostdb/virushostdb.tsv"
+
+virus_pathogen_db:
+  url: "https://github.com/user-attachments/files/24442102/virus_pathogen_database.host_metadata.v3.2.4.tsv.zip"
+  zip: "database/esviritu/v3.2.4/virus_pathogen_database.host_metadata.v3.2.4.tsv.zip"
+  tsv: "database/esviritu/v3.2.4/virus_pathogen_database.host_metadata.v3.2.4.tsv"
+  all_metadata: "database/esviritu/v3.2.4/virus_pathogen_database.all_metadata.tsv"
+
+
+# ============================================================
+# 00_lucaprot.smk
+# ============================================================
+lucaprot:
+  install_dir:    "tools/LucaProt"
+  repo_url:       "https://github.com/alibaba/LucaProt"
+  db_dir:         "database/lucaprot"
+  marker_install: "tools/LucaProt/.install.done"
+  marker_db:      "database/lucaprot/.download.done"
+
+
+# ============================================================
+# 01_bacteria_genome_assembly.smk
+# ============================================================
+bacteria_log_dir: "log/01_bacteria_genome_assembly"
+
+bacteria_input_dir: "input/bacteria/rawdata"
+bacteria_fastp_dir: "result/01_bacteria_genome_assembly/1_fastp"
+bacteria_spades_dir: "result/01_bacteria_genome_assembly/2_spades_result"
+bacteria_reformated_scaffolds_dir: "result/01_bacteria_genome_assembly/3_reformated_scaffolds"
+easy-linclust_dir: "result/01_bacteria_genome_assembly/4_easy-linclust"
+
+bacteria_fastp:
+  threads: 4
+  qualified_quality_phred: 20
+  length_required: 20
+  runtime: 1200  # minutes
+  memory: 3968  # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+bacteria_spades:
+  threads: 32
+  memory: 512        # GB — passed to SPAdes -m flag
+  memory_per_cpu: 12000
+  kmers: "21,33,55,77,101,121"
+  runtime: 4320      # minutes (72 hours)
+  partition: "memory"
+  account: "research-ceg-wm"
+
+reformat_scaffolds:
+  min_length: 300
+  nr_width: 10
+  threads: 8
+  runtime: 600  # minutes
+  partition: "compute-p1,compute-p2"
+
+seqkit_overXbp:
+  min_length: 100
+  nr_width: 10
+  threads: 8
+  runtime: 600  # minutes
+  memory: 3968  # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+easy-linclust:
+  threads: 32
+  runtime: 5000  # minutes
+  memory_per_cpu: 16384
+  partition: "memory"
+  account: "research-ceg-wm"
+  min_seq_id: 0.99
+  cov_mode: 1
+  cluster_mode: 2
+  coverage: 1
+
+
+# ============================================================
+# 02_RNA_virus_assembly.smk
+# ============================================================
+rna_log_dir: "log/02_RNA_virus_assembly"
+
+rna_input_dir: "input/RNA/RNA_rawdata"
+rna_fastp_dir: "result/02_RNA_virus_assembly/1_fastp"
+ribodetector_dir: "result/02_RNA_virus_assembly/2_ribodetector"
+sortmerna_dir:  "result/02_RNA_virus_assembly/2_sortmerna"
+bbtools_dir:    "result/02_RNA_virus_assembly/2_sortmerna_paired"
+rna_spades_dir: "result/02_RNA_virus_assembly/3_spades_result"
+rna_reformated_scaffolds_dir: "result/02_RNA_virus_assembly/4_rename_assembly"
+
+rna_runtime: 3600  # minutes (fallback for rules without dedicated runtime)
+
+databases:
+  esviritu_db_v3.2.4: "database/esviritu/v3.2.4"
+
+rna_fastp:
+  threads: 8
+  runtime: 3600  # minutes
+  quality_threshold: 20
+  length_required: 20
+  memory_per_cpu: 8000
+  partition: "memory"
+  account: "research-ceg-wm"
+
+ribodetector:
+  threads: 8
+  runtime: 7200  # minutes (120 hours)
+  min_length: 50
+  chunk_size: 10000
+  memory: 16000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+
+sortmerna:
+  threads: 16
+  memory: 32000  # MB
+  partition: "memory"
+  runtime: 7200  # minutes (120 hours)
+  account: "research-as-bt"
+  dbs:
+    - "database/sortmerna/smr_v4.3_default_db.fasta"
+    - "database/sortmerna/smr_v4.3_fast_db.fasta"
+    - "database/sortmerna/smr_v4.3_sensitive_db.fasta"
+    - "database/sortmerna/smr_v4.3_sensitive_db_rfam_seeds.fasta"
+
+bbtools_repair:
+  threads: 4
+  runtime: 120
+  memory: 3968  # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+rna_spades:
+  threads: 8
+  partition: "memory"
+  memory: 8000  # MB per CPU
+  account: "research-ceg-wm"
+  runtime: 7200  # minutes (120 hours)
+  k_values: "21,33,55,77,101,121"
+
+seqkit:
+  threads: 8
+  min_length: 1000
+  nr_width: 10
+  memory: 3968  # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  runtime: 3600  # minutes
+
+mmseqs2:
+  enabled: false
+  threads: 24
+  runtime: 7200  # minutes (120 hours)
+  min_seq_id: 0.95
+  coverage: 0.8
+  prefix: "All1000_ESViritu"
+
+
+# ============================================================
+# 03_RDRP_identification.smk
+# ============================================================
+rdrp_log_dir:          "log/03_RDRP_identification"
+rdrp_catch_output_dir: "result/03_RDRP_identification/1_RdRpCATCH"
+palmscan_output_dir:   "result/03_RDRP_identification/2_palmscan"
+lucaprot_output_dir:   "result/03_RDRP_identification/3_lucaprot"
+orffinder_dir:         "result/03_RDRP_identification/0_orffinder"
+
+orffinder:
+  threads: 2
+  runtime: 360          # minutes (6 hours)
+  memory: 3968
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  min_length: 300        # minimum ORF length in aa
+  strand: "both"        # both, plus, minus
+
+rdrp_catch:
+  db_dir: "database/rdrpcatch/rdrpcatch_dbs"
+  threads: 8
+  runtime: 360          # minutes (6 hours)
+  seq_type: "nuc"
+  # RVMT,Lucaprot_HMM,Zayed_HMM has low false positive rate
+  #db_options: "RVMT,Lucaprot_HMM,Zayed_HMM"
+  #all use all rdrp databases but higher false positive rate
+  db_options: "all"
+  # database(s) used only for the taxonomic-annotation rule (rdrpcatch_taxonomy)
+  tax_db_options: "RVMT"
+  memory: 3968  # MB per CPU
+
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+cdhit:
+  threads: 8
+  runtime: 360          # minutes (6 hours)
+  memory: 3968          # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  # amino acid identity (AAI) similarity threshold for clustering
+  aai_threshold: 0.90
+
+
+lucaprot_rdrp:
+  use: true             # set true to enable lucaprot rule in rule all
+  threads: 8
+  runtime: 360          # minutes (6 hours)
+  memory: 3968          # MB per CPU
+  partition: "gpu" # use gpu-v100 or gpu-a100 for GPU runs; "compute-p1,compute-p2" for CPU
+  account: "research-ceg-wm"
+  gpu_id: 0             # -1 = CPU; 0 = first GPU on node
+  gpu_devices: "0"      # passed to CUDA_VISIBLE_DEVICES; only used when gpu_id >= 0
+  gpus: 1               # --gpus-per-task value; only used when gpu_id >= 0
+  truncation_seq_length: 4096
+  time_str: "20230201140320"
+  step: 100000
+  threshold: 0.5        # LucaProt run threshold (base CSV)
+  filter_threshold: 0.9 # post-filter threshold applied without re-running LucaProt; set null to disable
+  print_per_number: 10
+
+alphafold3:
+  # https://github.com/google-deepmind/alphafold3/blob/main/docs/installation.md
+  repo_url:     "https://github.com/google-deepmind/alphafold3.git"
+  # Pinned to match the .sif image below (cford38/alphafold3 = AF3 v3.0.0
+  # code), NOT the latest release -- the repo clone here is only used for
+  # fetch_databases.sh, and it must match the container's AF3 version to
+  # avoid database-format/CLI mismatches between what's fetched and what the
+  # v3.0.0 code inside the container expects.
+  version:      "v3.0.0"
+  install_dir:  "tools/alphafold3"
+  sif:          "tools/alphafold3/alphafold3.sif"
+  # DelftBlue has no Docker daemon, and apptainer build --fakeroot cannot
+  # parse a raw Dockerfile (tried -- fails with "invalid header keyword
+  # found"). So the .sif is pulled from a prebuilt community image instead,
+  # pinned at AF3 v3.0.0. See workflow/00_alphafold3.smk for details/fallback.
+  # https://github.com/colbyford/af3-on-hpc / https://hub.docker.com/r/cford38/alphafold3
+  docker_image: "cford38/alphafold3"
+  # Model parameters are documented as gated (see WEIGHTS_TERMS_OF_USE.md),
+  # but this URL currently serves the file with no auth challenge (verified
+  # 2026-09-01, HTTP 200, ~973 MiB). Downloaded automatically below; usage is
+  # still subject to WEIGHTS_TERMS_OF_USE.md regardless of download access.
+  weights_url:  "https://storage.googleapis.com/alphafold3/af3.bin.zst"
+  model_dir:    "database/alphafold3/models"
+  db_dir:       "database/alphafold3/public_databases"
+  db_marker:    "database/alphafold3/public_databases/.download.done"
+  threads: 8
+  runtime: 720          # minutes (12 hours) -- genetic search + inference
+  memory: 8000           # MB per CPU
+  partition: "gpu"       # use gpu-a100/gpu-h100 -- AF3 requires Compute Capability 8.0+
+  account: "research-ceg-wm"
+  gpu_id: 0
+  gpu_devices: "0"
+  gpus: 1
+
+# ESvirtu LucaProt/RdRP block temporarily removed from workflow 03.
+# Config kept here (commented) for easy re-enabling later.
+# esvirtu_lucaprot:
+#   use: true             # set true to run LucaProt on the ESvirtu virus_pathogen_database
+#   n_chunks: 6           # number of chunks to split virus_pathogen_database.fna into (30K seqs, ~5K/chunk)
+#   fna: "database/esviritu/v3.2.4/virus_pathogen_database.fna"
+#   threads: 8
+#   runtime: 360          # minutes (6 hours) per chunk
+#   memory: 3968          # MB per CPU
+#   partition: "gpu"
+#   account: "research-ceg-wm"
+#   gpu_id: 0
+#   gpu_devices: "0"
+#   gpus: 1
+#   truncation_seq_length: 4096
+#   time_str: "20230201140320"
+#   step: 100000
+#   threshold: 0.5
+#   filter_threshold: 0.9 # set null to disable post-filter
+#   print_per_number: 10
+
+palm_annot:
+  install_dir: "tools/palm_annot"
+  threads: 4
+  runtime: 3600  # minutes
+  seqtype: "aa"
+  minscore: 75
+  minpssmscore: 10.0
+  tmpdir: "tmp/palm_annot"
+  memory: 3968  # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+# nr viral-origin check (Step 10): Diamond BLASTp of final RdRp candidates
+# against nr, restricted to the Riboviria taxon via diamond's own
+# --taxonlist filter. Sequences with no significant (e-value < threshold)
+# hit within Riboviria are excluded. Placeholder paths -- fill in real
+# DelftBlue locations.
+#
+# NOTE: NCBI stopped publishing plain nr.gz FASTA on the FTP site in April
+# 2024 -- only the pre-formatted BLAST database is still served. nr_fasta /
+# prot_accession2taxid below are regenerated locally from that BLAST db via
+# blastdbcmd (rule generate_nr_fasta_and_taxid_map in
+# 00_setup_RNA_database.smk), not downloaded directly.
+diamond_nr:
+  db_dir:      "database/diamond_nr"                       # placeholder -- set to actual nr db dir on DelftBlue; also where `update_blastdb.pl nr` fetches BLAST db volumes
+  nr_fasta:    "database/diamond_nr/nr.fasta"               # regenerated from the BLAST db via `blastdbcmd -db nr -entry all`
+  dmnd_db:     "database/diamond_nr/nr.dmnd"
+  taxdump_url: "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/new_taxdump/new_taxdump.tar.gz"
+  taxdump_dir: "database/diamond_nr/taxdump"                # needs nodes.dmp + names.dmp, fed to `diamond makedb --taxonnodes/--taxonnames`
+  prot_accession2taxid: "database/diamond_nr/prot.accession2taxid.tsv"  # regenerated via `blastdbcmd -outfmt "%a %T"`, not downloaded
+  db_marker:   "database/diamond_nr/.build.done"
+  riboviria_taxid: 2559587   # NCBI taxid for realm Riboviria, passed to diamond blastp --taxonlist
+  evalue: 0.001          # NCBI nr BLASTp e-value threshold used for viral-origin filtering
+  threads: 16
+  runtime: 2880          # minutes (48 hours) -- nr search is slow
+  memory: 16000           # MB per CPU -- used by diamond blastp search rules (workflow 03) and build_diamond_nr_db
+  partition: "memory"
+  account: "research-ceg-wm"
+  # generate_nr_fasta_and_taxid_map (blastdbcmd) is single-threaded and doesn't
+  # benefit from extra CPUs, but needs its own generous per-CPU memory since
+  # -entry all over the whole nr db (with its OID/ISAM structures) can exceed
+  # the default diamond_nr.memory sizing at cpus_per_task=1. Bump this (and/or
+  # switch partition to "memory") if the rule gets OOM-killed.
+  blastdbcmd_memory: 16000   # MB per CPU (cpus_per_task=1); blastdbcmd -entry all over full nr needs ~64-128 GB
+  blastdbcmd_partition: "memory"
+  annotate_taxonomy_threads: 4
+  annotate_taxonomy_memory: 16000  # MB per CPU; 4 CPUs = 64 GB total for streaming prot.accession2taxid.tsv
+  annotate_taxonomy_runtime: 600   # minutes (10 hours)
+  annotate_taxonomy_partition: "memory"
+
+
+# ============================================================
+# 03_RDRP_identification.smk — motif search (Step 4)
+# ============================================================
+motif_search:
+  prefix:           "Yangtze"
+  threads:          8
+  memory:           3968
+  runtime:          360           # minutes (6 hours)
+  partition:        "compute-p1,compute-p2"
+  account:          "research-ceg-wm"
+  parallel_module:  "2025 parallel/20240822"
+  split_memory_limit: "100G"
+
+
+# ============================================================
+# 03b_esvirtu_rdrp_identification.smk
+# ============================================================
+
+
+# ============================================================
+# 03c_ref_palm_annot.smk
+# ============================================================
+ref_palm_annot:
+  # Which taxonomic ranks to run palm_annot on for RVMT reference sequences.
+  # Restrict to a subset (e.g. just phylum/class) to skip order/family for now.
+  ranks: ["phylum", "class"]
+
+
+# ============================================================
+# 04_modified_esvirtue.smk
+# ============================================================
+esviritu_log_dir:    "log/04_modified_esvirtue"
+esviritu_result_dir: "result/04_modified_esvirtue"
+esviritu_runtime: 3600  # minutes — fallback for rules without dedicated runtime
+
+merge_esviritu_database_1:
+  threads: 1
+  runtime: 30   # minutes
+  min_length: 1000  # bp — matches Esviritu database construction criteria
+  memory: 8000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+
+checkv:
+  db_dir: "database/checkv/checkv-db-v1.5"
+  db_marker: "database/checkv/done.txt"
+  threads: 8
+  runtime: 7200  # minutes (120 hours)
+  memory: 3968  # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  min_ani: 95
+  min_coverage: 85
+  min_qcov: 0
+  blast_outfmt: "6 std qlen slen"
+  blast_max_target_seqs: 10000
+
+genomad:
+  db_dir: "database/genomad/genomad_db"
+  download_dir: "database/genomad"
+  db_marker: "database/genomad/done.txt"
+  threads: 8
+  runtime: 1440  # minutes
+  memory: 3968   # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+virsorter2:
+  database: "database/virsorter2"
+  db_marker: "database/virsorter2/done.txt"
+  threads: 8
+  runtime: 1440  # minutes
+  memory: 3968   # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  min_length: 1000
+  min_score: 0.5
+  groups: "dsDNAphage,NCLDV,RNA,ssDNA,lavidaviridae"
+
+
+# ============================================================
+# 04_RDRP_annotation.smk
+# ============================================================
+rdrp_annotation_output_dir: "result/04_RDRP_annotation"
+
+
+# ============================================================
+# 05_esvirtue_correlation_analysis.smk
+# ============================================================
+correlation:
+  threads: 16
+  runtime: 3000  # minutes
+  memory: 3968   # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  min_samples: 5            # exclude virus present in fewer than N samples (0 = keep all)
+  thresholds: "0.6,0.7,0.8,0.9"
+  p_threshold: 0.1
+  clr_pseudocount: null    # pseudocount before CLR; null = auto (min non-zero value / 2), or set a number e.g. 1.0
+  pairs: "kk,uk"           # pair types to include: kk=known-known, uk=unknown-known, ku=known-unknown, uu=unknown-unknown
+  chunk_size: 5000         # rows per chunk for uk/ku (lower = less RAM); 5000 safe for 64 GB with 400 known x 150K unknown
+  chunk_size_all_vs_all: 100  # rows per chunk for all-vs-all; 100 recommended when pass rate is high (>10%)
+
+fastspar:
+  run: true
+  threads: 16
+  runtime: 3000         # minutes
+  memory: 10000           # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+  iterations: 50         # rounds of SparC estimation
+  exclude_iterations: 10 # times to exclude highly correlated pairs
+  threshold: 0.1         # minimum r to exclude a pair during estimation
+  bootstraps: 1000       # number of bootstrap replicates for p-values
+  min_samples_others: 10  # OTUs present in fewer than N samples are collapsed into an 'others' row
+  r_threshold: "0.6,0.7,0.8,0.9"   # r thresholds for r_group in output
+  r_min: 0.6             # minimum r to keep in filtered output
+  p_threshold: 0.05      # maximum p-value to keep in filtered output
+
+
+# ============================================================
+# 06_contig_bait.smk
+# ============================================================
+contig_bait:
+  threads:         8
+  memory:           8000    # MB per CPU
+  runtime:          7200    # minutes
+  partition:        "memory"
+  account:          "research-ceg-wm"
+  # mmseqs search parameters (from Zayed et al. 2022)
+  search_type:      3       # nucleotide-nucleotide
+  min_aln_len:      120
+  min_seq_id:       0.66    # loose initial filter
+  sensitivity:      1       # non-sensitive (-s 1)
+  coverage:         0.85
+  cov_mode:         1       # target coverage
+  # post-filter thresholds
+  filter_evalue:    1.0e-9
+  filter_min_pident: 95.0   # percent identity (0-100)
+  filter_min_tcov:  0.95    # target coverage fraction (0-1)
+
+
+# ============================================================
+# 07_RDRP_tree_construction.smk
+# ============================================================
+mafft:
+  threads:   16
+  memory:    3968    # MB per CPU
+  runtime:   3600    # minutes
+  partition: "compute-p1,compute-p2"
+  account:   "research-ceg-wm"
+
+iqtree:
+  threads:   32
+  memory:    3968    # MB per CPU
+  runtime:   7200    # minutes (120 hours)
+  partition: "compute-p1,compute-p2"
+  account:   "research-ceg-wm"
+
+
+# ============================================================
+# EPA-ng phylogenetic placement (workflow 07)
+# ============================================================
+# Reference: Neri et al. 2022 RCR90 reference MSA + tree (Zenodo 10.5281/zenodo.6553771)
+# The reference tree/MSA are FIXED — placement only, never re-optimized or rebuilt.
+epa_ng:
+  # RVMT Zenodo V4 RdRp reference alignment (Neri et al. 2022 RCR90 motif-core MSA,
+  # 77,520 seqs x 874 columns) located on DelftBlue.
+  ref_msa:   "database/RVMT/RVMT_Zenodo_V4/RVMT_Zenodo_V4/RdRPs/210822m.77510.09.rt.afa"
+  ref_tree:  "database/RVMT/RVMT_Zenodo_V4/RVMT_Zenodo_V4/Trees/210822m.77510.09.rt.ft.r.tre"
+  # RiboV1.6_Info.tsv from RVMT Zenodo — col3=RCR90 tip label, col16-20=taxonomy
+  rvmt_info_tsv: "database/RVMT/RVMT_Zenodo_V4/RVMT_Zenodo_V4/Tables/RiboV1.6_Info.tsv"
+  # Whether to also include ICTV reference candidates (workflow 03 ICTV pipeline,
+  # same tier1a/1b/2 outputs) in the query batches alongside contig candidates.
+  # true  = ICTV sequences placed on the tree too (useful as a taxonomic anchor)
+  # false = only contig-derived candidates are placed
+  include_ictv: False
+  # Whether to also include ESvirtu reference candidates (workflow 04_03,
+  # same tier1a/1b/2 outputs) in the query batches. Independent of include_ictv.
+  include_esvirtu: True
+  # RAxML-style model string passed to epa-ng --model (confirmed flag name)
+  model: "WAG+G"
+
+  small_job:
+    threads:   4
+    memory:    3968   # MB per CPU
+    runtime:   1440    # minutes
+    partition: "compute-p1,compute-p2"
+    account:   "research-ceg-wm"
+
+  hmmbuild:
+    threads:   8
+    memory:    3968   # MB per CPU
+    runtime:   240    # minutes
+    partition: "compute-p1,compute-p2"
+    account:   "research-ceg-wm"
+
+  hmmalign:
+    threads:   8
+    memory:    3968   # MB per CPU
+    runtime:   240    # minutes
+    partition: "compute-p1,compute-p2"
+    account:   "research-ceg-wm"
+
+  epang:
+    threads:   16
+    memory:    16000  # MB per CPU — memory partition; 32 x 16000 = 512 GB
+    runtime:   4880   # minutes (48 hours) — adjust after first batch timing
+    partition: "memory"
+    account:   "research-ceg-wm"
+
+  gappa:
+    threads:   8
+    memory:    3968   # MB per CPU
+    runtime:   240    # minutes
+    partition: "compute-p1,compute-p2"
+    account:   "research-ceg-wm"
+
+  # De-novo FastTree pipeline (contig + ESvirtu + RT outgroup).
+  # Activated when include_fasttree: true (independent of EPA-ng placement).
+  # The RT outgroup sequences are extracted from the reference MSA
+  # (ref_msa above): any sequence whose ID does NOT start with "Rv4_"
+  # is treated as a reverse-transcriptase outgroup (10 seqs in RCR90).
+  include_epang: True
+  include_epang_unfiltered: True   # set True to also run EPA-ng on unfiltered sequences
+  gappa_afract_threshold: 0.66    # afract cutoff for confident taxonomy annotation
+  include_fasttree: True
+  include_fasttree_ictv: True   # separate tree with ICTV sequences added
+  include_fasttree_full: True        # separate tree with all 4010+142 unfiltered proteins
+  include_fasttree_full_ictv: True   # same as full but with ICTV sequences added
+  fasttree:
+    threads:   8
+    memory:    16000  # MB per CPU — FastTree is RAM-intensive on >3k seqs
+    runtime:   5600  # minutes (2 weeks) — needed when bootstrap > 0
+    partition: "memory"
+    account:   "research-ceg-wm"
+    bootstrap: 1000   # 0 = no bootstrap (SH-like support only); >0 = replicates
+  itol:
+    # Filter for known-unknown pairs (esvirtu ↔ contig) only.
+    # A pair is kept only if seed_nonzero_samples >= min_seed_nonzero
+    # AND target_nonzero_samples >= min_target_nonzero.
+    # Set to 0 to disable that filter.
+    min_seed_nonzero:   20   # min nonzero samples for the known (esvirtu) seed
+    min_target_nonzero: 20    # min nonzero samples for the unknown (contig) target
+
+
+# ============================================================
+# 08_ssDNA_identification.smk
+# ============================================================
+genomad_filter:
+  exclude_topology: "Provirus"
+  min_hallmarks: 1
+  # ICTV phyla / families whose taxonomy strings indicate ssDNA viruses.
+  # GeNomad virus_summary 'taxonomy' column is searched for these substrings.
+  # Add new entries here to extend the filter without touching the script.
+  ssDNA_taxonomy_keywords:
+
+    # --- Realm: Monodnaviria ---
+    # Kingdom: Shotokuvirae (eukaryotic ssDNA + derived dsDNA)
+    - "Cressdnaviricota"       # circular CRESS-DNA: Geminiviridae, Circoviridae,
+                               #   Nanoviridae, Genomoviridae, Smacoviridae, etc.
+    - "Cossaviricota"          # Parvoviridae (linear ssDNA), Papillomaviridae,
+                               #   Polyomaviridae (NOTE: these last two are dsDNA)
+    - "Commensaviricota"       # Anelloviridae — NEW phylum ratified 2025
+                               #   (replaces "Preplasmaviricota" which was WRONG)
+
+    # Family-level catch for unclassified / legacy labels
+    - "Anelloviridae"          # in case phylum label is absent in your data
+
+    # Kingdom: Loebvirae (bacterial ssDNA — filamentous phage)
+    - "Hofneiviricota"         # Inoviridae, Plectroviridae (M13, fd phage)
+
+    # Kingdom: Sangervirae (bacterial ssDNA — icosahedral phage)
+    - "Phixviricota"           # Microviridae (φX174)
+
+    # Kingdom: Trapavirae (archaeal ssDNA)
+    - "Calorviricota"          # new 2025, hyperthermophilic archaea
+    - "Saleviricota"           # archaeal ssDNA
+
+
+
+ssDNA_checkv_cluster:
+  threads: 8
+  runtime: 1440   # minutes
+  memory: 3968    # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  min_ani: 95
+  min_qcov: 85
+
+
+esviritu_map:
+  threads: 12
+  runtime: 7200  # minutes
+  memory: 16000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+  keep: "True"
+  quiet: "False"
+  extra: ""
+
+select_cluster_representatives:
+  threads: 4
+  runtime: 600  # minutes
+  memory: 8000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+
+index_final_virus_pathogen_database:
+  threads: 4
+  runtime: 600  # minutes
+  memory: 8000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+
+merge_esviritu_metadata:
+  threads: 4
+  runtime: 600  # minutes
+  memory: 8000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+
+merge_esviritu_assembly_summary:
+  threads: 1
+  runtime: 60   # minutes
+  memory: 8000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+
+merge_esviritu_rpkmf_all_samples:
+  threads: 1
+  runtime: 60   # minutes
+  memory: 8000  # MB per CPU
+  partition: "memory"
+  account: "research-ceg-wm"
+
+
+ref_cluster_select:
+  db_id_col: ""
+  sample_order: ""
+  sample_order_file: ""
+  with_cluster_id: false
+
+
+# ============================================================
+# 99_tables.smk
+# ============================================================
+
+
+# ============================================================
+# 100_figure: network diagram variants
+# kk_threshold: "" = same as ku threshold; "all" = all 4 kk files; "0.6"/"0.7"/"0.8"/"0.9" = specific
+# hide_not_in_list: true/false — exclude unknown contigs with no RdRP evidence
+# ============================================================
+network_figure:
+  run: false   # set false to skip plot_network entirely (no figures generated)
+
+  # Taxonomic levels to generate figures for.
+  # Must match subdirectory names under 3_spearman_analysis and 4_spearman_analysis_RdRp_annotated.
+  levels:
+    - subspecies
+    #- species
+
+  # Cumulative r thresholds. Each value generates one set of figures that includes
+  # all edges with r_group >= this threshold (e.g. 0.8 includes r_group 0.8 and 0.9).
+  thresholds:
+    #- "0.6"
+    - "0.7"
+    - "0.8"
+    - "0.9"
+
+  # Figure variants. Each key becomes a subdirectory in the output folder.
+  # kk_threshold:     "" = load known-known pairs at the same threshold as known-unknown;
+  #                   "all" = load all 4 known-known threshold files regardless of ku threshold;
+  #                   "0.6"/"0.7"/"0.8"/"0.9" = load known-known at exactly this threshold only.
+  # hide_not_in_list: true  = remove unknown contigs with rdrp_category=not_in_list from the figure;
+  #                   false = show all unknown contigs including those with no RdRP evidence.
+  variants:
+    standard_kk0.7:                  # unknown contigs with ku r>=threshold; kk edges from r0.7 file
+      kk_threshold:      "0.7"
+      hide_not_in_list:  false
+      kk_only:           false
+    rdrp_kk0.7:                      # same as standard, but hide unknown contigs with no RdRP evidence
+      kk_threshold:      "0.7"
+      hide_not_in_list:  true
+      kk_only:           false
+    kk_only_kk0.7:                   # only known-known pairs at r>=0.7, no unknown contigs at all
+      kk_threshold:      "0.7"
+      hide_not_in_list:  false
+      kk_only:           true
+    standard_kk0.8:                  # unknown contigs with ku r>=threshold; kk edges from r0.8 file
+      kk_threshold:      "0.8"
+      hide_not_in_list:  false
+      kk_only:           false
+    rdrp_kk0.8:                      # same as standard, but hide unknown contigs with no RdRP evidence
+      kk_threshold:      "0.8"
+      hide_not_in_list:  true
+      kk_only:           false
+    kk_only_kk0.8:                   # only known-known pairs at r>=0.8, no unknown contigs at all
+      kk_threshold:      "0.8"
+      hide_not_in_list:  false
+
+contig_tag_barplot:
+  run: true   # set false to skip plot_contig_tag_barplot entirely
+
+host_lineage_barplot:
+  run: true        # set false to skip plot_host_lineage_barplot (3_host_lineage_heatmap) entirely
+  value_type: both # "rpkmf", "tpm", or "both"
+  top_n: 15        # number of top hosts (by abundance) shown in the heatmap; --output-table always has all hosts
+
+known_virus_heatmap:
+  run: true        # set false to skip plot_known_virus_heatmap (4_known_virus_heatmap) entirely
+  value_type: both # "rpkmf", "tpm", or "both"
+  top_n: 15        # number of top known (t__) viruses (by abundance) shown in the heatmap
+
+contamination_figure:
+  run: true        # set false to skip plot_contamination
+  kraken_dir: "result/101_kraken_check/1_kraken2"
+  threshold: 0.5   # highlight samples above this % Homo sapiens
+
+gappa_phylum_figure:
+  run: true
+  batches:
+    - unfiltered_epang   # matches 5_gappa/{batch}/phylum_annotation.tsv in cp_table
+  indir: "result/99_tables/01_cp_table/101_cluster_RDRP_tree_construction/5_gappa"
+
+coabundance_figure:
+  run: true
+  thresholds:      # one output subdir per threshold value
+    - 0.7
+    - 0.8
+  tpm: "result/99_tables/5_Recalculated_RPKM_result/rna_virus_recalc_tpm.tsv"
+  kk_dir: "result/99_tables/6_Recalculated_correlation/1_RNA_virus_Recalculated_correlation_TPM/2_spearman_analysis/known_known_pair"
+  ku_dir: "result/99_tables/6_Recalculated_correlation/1_RNA_virus_Recalculated_correlation_TPM/2_spearman_analysis/known_unknown_pair"
+
+# ============================================================
+# 100_figure: compute resources (shared by all figure rules)
+# ============================================================
+figure_job:
+  threads:   2
+  memory:    3968   # MB per CPU
+  runtime:   300    # minutes
+  partition: "compute-p1,compute-p2"
+  account:   "research-ceg-wm"
+
+
+# ============================================================
+# 101_kraken_check.smk
+# ============================================================
+kraken2_log_dir:    "log/101_kraken_check"
+kraken2_dir:        "result/101_kraken_check/1_kraken2"
+bracken_merge_dir:  "result/101_kraken_check/2_bracken_merge"
+bracken_report_dir: "result/101_kraken_check/3_bracken_report"
+
+kraken2:
+  threads: 32
+  runtime: 1440  # minutes (24 hours)
+  memory: 3968  # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  confidence: 0.1
+
+bracken_build:
+  threads: 32
+  runtime: 600   # minutes
+  memory: 3968   # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  kmer_length: 35
+  read_length: 150
+
+bracken:
+  threads: 4
+  runtime: 120   # minutes
+  memory: 3968   # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+  kmer_length: 35
+  read_length: 150
+
+merge_bracken:
+  threads: 1
+  runtime: 60    # minutes
+  memory: 3968   # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+merge_bracken_report:
+  threads: 4
+  runtime: 60    # minutes
+  memory: 3968   # MB per CPU
+  partition: "compute-p1,compute-p2"
+  account: "research-ceg-wm"
+
+
+# ============================================================
+# 101b_RDRP_phylum_tree.smk
+# ============================================================
+rdrp_tree:
+  # Toggles which protein-set pipeline(s) run in
+  # workflow/101b_RDRP_phylum_tree.smk. Each mode aligns/builds a tree from a
+  # different protein region, gating an independent `if` block in the same
+  # file. Any combination may be enabled at once.
+  full_length: true
+  palm_core: true
+  palm_extended: true
+  # Number of RVMT reference sequences (in file order) taken from the
+  # reciprocal outgroup Phylum's {Phylum}_ref.faa. Capped at 2 because
+  # Duplornaviricota's RVMT reference set only has 2 sequences.
+  n_outgroup: 2
+  # trimAl column/sequence-overlap trimming flags (paper: -resoverlap 0.70
+  # -seqoverlap 75).
+  trimal_resoverlap: 0.70
+  trimal_seqoverlap: 75
+  # FastTree substitution model / rate-variation flags (paper: WAG model,
+  # gamma-distributed site rates).
+  fasttree_flags: "-wag -gamma"

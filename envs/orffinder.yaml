@@ -1,0 +1,7 @@
+name: orffinder
+channels:
+  - yangmingsi
+  - conda-forge
+  - defaults
+dependencies:
+  - orffinder=0.4.3

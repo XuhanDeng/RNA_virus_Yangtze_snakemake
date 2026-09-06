@@ -1,0 +1,161 @@
+configfile: "config/config.yaml"
+
+
+_CLR_PSEUDOCOUNT = (
+    "--clr-pseudocount " + str(config["correlation"]["clr_pseudocount"])
+    if config["correlation"]["clr_pseudocount"] is not None else ""
+)
+
+_UPSTREAM = "result/04_modified_esvirtue_ribodetector/es/Merge"
+_OUTDIR   = "result/05_esvirtu_correlation_analysis/1_spearman"
+
+_LEVEL_INPUT = {
+    "assembly":   f"{_UPSTREAM}/all_samples.detected_virus.assembly_summary.rpkmf.tsv",
+    "subspecies": f"{_UPSTREAM}/all_samples.detected_virus.assembly_summary.rpkmf.subspecies.tsv",
+    "species":    f"{_UPSTREAM}/all_samples.detected_virus.assembly_summary.rpkmf.species.tsv",
+}
+
+_LEVELS = list(_LEVEL_INPUT.keys())
+
+
+_OUTDIR_ALL2ALL = "result/05_esvirtu_correlation_analysis/2_all2all_spearman"
+
+
+rule all:
+    input:
+        expand(f"{_OUTDIR}/{{level}}.spearman.all.tsv",      level=_LEVELS),
+        expand(f"{_OUTDIR}/{{level}}.spearman.filtered.tsv", level=_LEVELS),
+        expand(f"{_OUTDIR}/{{level}}.clr.spearman.all.tsv",      level=_LEVELS),
+        expand(f"{_OUTDIR}/{{level}}.clr.spearman.filtered.tsv", level=_LEVELS),
+        expand(f"{_OUTDIR_ALL2ALL}/{{level}}.all_vs_all.spearman.filtered.tsv", level=_LEVELS),
+
+
+rule esviritu_correlation:
+    input:
+        table = lambda wc: ancient(_LEVEL_INPUT[wc.level]),
+    output:
+        all_corr  = f"{_OUTDIR}/{{level}}.spearman.all.tsv",
+        filt_corr = f"{_OUTDIR}/{{level}}.spearman.filtered.tsv",
+    wildcard_constraints:
+        level = "assembly|subspecies|species",
+    threads: config["correlation"]["threads"]
+    conda:
+        "../envs/python.yaml"
+    resources:
+        mem_mb_per_cpu  = config["correlation"]["memory"],
+        runtime         = config["correlation"]["runtime"],
+        cpus_per_task   = config["correlation"]["threads"],
+        slurm_partition = config["correlation"]["partition"],
+        slurm_account   = config["correlation"]["account"],
+    params:
+        script      = config["scripts"]["esviritu_subspecies_correlation"],
+        min_samples = config["correlation"]["min_samples"],
+        thresholds  = config["correlation"]["thresholds"],
+        p_threshold = config["correlation"]["p_threshold"],
+        pairs       = config["correlation"]["pairs"],
+        chunk_size  = config["correlation"]["chunk_size"],
+    log:
+        out = "log/05_esvirtu_correlation_analysis/1_spearman/{level}.log",
+        err = "log/05_esvirtu_correlation_analysis/1_spearman/{level}.err",
+    shell:
+        """
+        mkdir -p {_OUTDIR} log/05_esvirtu_correlation_analysis/1_spearman
+        python {params.script} \
+            --input {input.table} \
+            --output-all {output.all_corr} \
+            --output-filtered {output.filt_corr} \
+            --min-samples {params.min_samples} \
+            --thresholds {params.thresholds} \
+            --p-threshold {params.p_threshold} \
+            --pairs {params.pairs} \
+            --chunk-size {params.chunk_size} \
+            --threads {threads} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule esviritu_correlation_clr:
+    input:
+        table = lambda wc: ancient(_LEVEL_INPUT[wc.level]),
+    output:
+        all_corr  = f"{_OUTDIR}/{{level}}.clr.spearman.all.tsv",
+        filt_corr = f"{_OUTDIR}/{{level}}.clr.spearman.filtered.tsv",
+    wildcard_constraints:
+        level = "assembly|subspecies|species",
+    threads: config["correlation"]["threads"]
+    conda:
+        "../envs/python.yaml"
+    resources:
+        mem_mb_per_cpu  = config["correlation"]["memory"],
+        runtime         = config["correlation"]["runtime"],
+        cpus_per_task   = config["correlation"]["threads"],
+        slurm_partition = config["correlation"]["partition"],
+        slurm_account   = config["correlation"]["account"],
+    params:
+        script          = config["scripts"]["esviritu_subspecies_correlation"],
+        min_samples     = config["correlation"]["min_samples"],
+        thresholds      = config["correlation"]["thresholds"],
+        p_threshold     = config["correlation"]["p_threshold"],
+        pairs           = config["correlation"]["pairs"],
+        chunk_size      = config["correlation"]["chunk_size"],
+        clr_pseudocount = _CLR_PSEUDOCOUNT,
+    log:
+        out = "log/05_esvirtu_correlation_analysis/1_spearman/{level}.clr.log",
+        err = "log/05_esvirtu_correlation_analysis/1_spearman/{level}.clr.err",
+    shell:
+        """
+        mkdir -p {_OUTDIR} log/05_esvirtu_correlation_analysis/1_spearman
+        python {params.script} \
+            --input {input.table} \
+            --output-all {output.all_corr} \
+            --output-filtered {output.filt_corr} \
+            --min-samples {params.min_samples} \
+            --thresholds {params.thresholds} \
+            --p-threshold {params.p_threshold} \
+            --pairs {params.pairs} \
+            --chunk-size {params.chunk_size} \
+            {params.clr_pseudocount} \
+            --clr \
+            --threads {threads} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule spearman_all_vs_all:
+    input:
+        table = lambda wc: ancient(_LEVEL_INPUT[wc.level]),
+    output:
+        filt_corr = f"{_OUTDIR_ALL2ALL}/{{level}}.all_vs_all.spearman.filtered.tsv",
+    wildcard_constraints:
+        level = "assembly|subspecies|species",
+    threads: config["correlation"]["threads"]
+    conda:
+        "../envs/python.yaml"
+    resources:
+        mem_mb_per_cpu  = config["correlation"]["memory"],
+        runtime         = config["correlation"]["runtime"],
+        cpus_per_task   = config["correlation"]["threads"],
+        slurm_partition = config["correlation"]["partition"],
+        slurm_account   = config["correlation"]["account"],
+    params:
+        script      = config["scripts"]["spearman_all_vs_all"],
+        min_samples = config["correlation"]["min_samples"],
+        thresholds  = config["correlation"]["thresholds"],
+        p_threshold = config["correlation"]["p_threshold"],
+        chunk_size  = config["correlation"]["chunk_size_all_vs_all"],
+    log:
+        out = "log/05_esvirtu_correlation_analysis/2_all_vs_all/{level}.log",
+        err = "log/05_esvirtu_correlation_analysis/2_all_vs_all/{level}.err",
+    shell:
+        """
+        mkdir -p {_OUTDIR_ALL2ALL} log/05_esvirtu_correlation_analysis/2_all_vs_all
+        python {params.script} \
+            --input {input.table} \
+            --output-filtered {output.filt_corr} \
+            --min-samples {params.min_samples} \
+            --thresholds {params.thresholds} \
+            --p-threshold {params.p_threshold} \
+            --chunk-size {params.chunk_size} \
+            --threads {threads} \
+            > {log.out} 2> {log.err}
+        """

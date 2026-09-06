@@ -1,0 +1,8 @@
+name: epang_gappa
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - bioconda::epa-ng
+  - bioconda::gappa

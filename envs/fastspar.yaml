@@ -1,0 +1,8 @@
+name: fastspar
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - fastspar
+  - parallel

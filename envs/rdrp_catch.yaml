@@ -1,0 +1,6 @@
+name: rdrpcatch
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - rdrpcatch=1.0.1.post1

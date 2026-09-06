@@ -1,0 +1,7 @@
+name: hhsuite
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - bioconda::hhsuite=3.3.0

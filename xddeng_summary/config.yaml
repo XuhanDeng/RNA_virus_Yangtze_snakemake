@@ -1,0 +1,22 @@
+# ─────────────────────────────────────────────────────────────────
+# config.yaml — RdRP motif A-D identification pipeline
+# Edit the paths below, then run:
+#   snakemake -s RdRP_motif_search.smk --configfile config.yaml -j 16
+# ─────────────────────────────────────────────────────────────────
+
+# Your candidate RdRP protein sequences (full-length, .faa format)
+input_faa: "/path/to/your_RdRPs.faa"
+
+# Zenodo Sequence_Library directory
+# Must contain subdirectories mot.1/ mot.2/ mot.3/ mot.4/
+# each holding *_woCon.afa pre-aligned MSA cluster files
+sequence_library: "/Users/dengxuhan/yangtze/software_test/RVMT_Zenodo_V4/RdRPs/Motifs/Sequence_Library"
+
+# Base output directory (will be created automatically)
+outdir: "/path/to/output"
+
+# Number of CPU threads
+threads: 16
+
+# Short label prepended to output file names
+prefix: "MyRun"

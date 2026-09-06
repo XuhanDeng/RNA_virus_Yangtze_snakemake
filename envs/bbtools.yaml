@@ -1,0 +1,7 @@
+name: bbtools
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - bbtools=37.62

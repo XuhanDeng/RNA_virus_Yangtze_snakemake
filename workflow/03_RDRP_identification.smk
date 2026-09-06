@@ -1,0 +1,2147 @@
+# RdRP identification pipeline
+# Step 1: RdRpCATCH — HMM-based RdRP candidate detection (high sensitivity, uses all databases)
+# Step 2: palm_annot — palmprint motif (ABC) verification with 150pp150 trimming (palmcore)
+#
+# Simplified design (no more tier system):
+#   A region is kept only if palmscan confirms an exact ABC or CAB palmprint motif.
+#   RdRpCATCH regions and LucaProt ORFs are deduped by overlap (RdRpCATCH wins ties),
+#   then only the single longest surviving region per contig is kept as that
+#   contig's final RdRp call. Every contig ends up tagged with exactly one
+#   source: RdRpCATCH or LucaProt. LucaProt hits that lost the overlap
+#   tie-break are NOT discarded from the record -- they're kept as
+#   lucaprot_also_identified / lucaprot_overlap_dropped columns on the final
+#   table, so LucaProt's identification ability can be evaluated even when
+#   RdRpCATCH's region won.
+#
+# Step 10 (nr viral-origin check): every final RdRp candidate protein
+# (RdRpCATCH.faa / LucaProt.faa, and their ICTV counterparts) is searched
+# against nr with Diamond BLASTp, restricted to the Riboviria taxon
+# (--taxonlist 2559587) via diamond's own built-in taxonomy filter -- no
+# separate taxonomy library needed. Sequences with no significant
+# (e-value < config["diamond_nr"]["evalue"]) hit within Riboviria are
+# excluded -- this removes endogenous viral elements and other false
+# positives that pass the motif filter but aren't of viral origin.
+# The nr Diamond database + taxonomy mapping are built by
+# workflow/00_setup_RNA_database.smk.
+
+import os
+
+configfile: "config/config.yaml"
+
+MIN_LEN  = config["seqkit"]["min_length"]
+RDRP_DIR = config["rdrp_catch_output_dir"]
+ICTV_STEM = "Riboviria_sequences"
+
+
+def lucaprot_targets():
+    if not config["lucaprot_rdrp"]["use"]:
+        return []
+    targets = expand(
+        config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_rdrp.csv",
+        sample=config["rna_samples"]
+    )
+    targets += expand(
+        config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_palmscan_hits.tsv",
+        sample=config["rna_samples"]
+    )
+    return targets
+
+
+# ── ICTV path constants (used by ictv_targets() and Step 9 rules) ─────────────
+_ICTV_RC_DIR  = RDRP_DIR + "/ICTV"
+_ICTV_PS_DIR  = config["palmscan_output_dir"] + "/ICTV"
+_ICTV_LP_DIR  = config["lucaprot_output_dir"] + "/ICTV"
+_ICTV_ORF_DIR = config["orffinder_dir"] + "/ICTV"
+
+_ICTV_OUT         = "/scratch/xddeng/yangtze/RNA/my_rna/result/03_RDRP_identification/ICTV"
+_ICTV_MERGE_DIR   = _ICTV_OUT + "/4_merged"
+_ICTV_CONTIG_DIR  = _ICTV_OUT + "/5_RdRp_contig"
+_ICTV_PROTEIN_DIR = _ICTV_OUT + "/8_RdRp_protein"
+_ICTV_PALM_DIR    = _ICTV_OUT + "/8b_palm_extracted"
+
+_SOURCE_LISTS = ["RdRpCATCH", "LucaProt", "any_rdrp"]
+
+
+def ictv_targets():
+    if not config["ICTV"]["use"]:
+        return []
+    return [
+        _ICTV_RC_DIR + "/" + ICTV_STEM + "_rdrpcatch_output_annotated.tsv",
+        _ICTV_PS_DIR + "/ICTV_palmscan_hits.tsv",
+        _ICTV_LP_DIR + "/ICTV_lucaprot_palmscan_hits.tsv",
+        _ICTV_MERGE_DIR + "/ICTV_rdrp_merged.tsv",
+        *[_ICTV_CONTIG_DIR  + f"/{n}.fasta" for n in _SOURCE_LISTS],
+        *[_ICTV_PROTEIN_DIR + f"/{n}.faa"   for n in ["RdRpCATCH", "LucaProt"]],
+        _ICTV_MERGE_DIR   + "/multi_region_contigs_summary.tsv",
+        _ICTV_PROTEIN_DIR + "/final_proteins_summary.tsv",
+        _ICTV_PALM_DIR + "/RdRpCATCH/palm_regions.tsv",
+        _ICTV_PALM_DIR + "/LucaProt/palm_regions.tsv",
+    ]
+
+
+_MERGE_DIR      = "result/03_RDRP_identification/4_merged"
+_CONTIG_DIR     = "result/03_RDRP_identification/5_RdRp_contig"
+_LIST_DIR       = _CONTIG_DIR   # .txt ID lists live alongside the .fasta files
+_NO_RDRP_DIR    = "result/03_RDRP_identification/7_no_RDRP_contig"
+_PROTEIN_DIR    = "result/03_RDRP_identification/8_RdRp_protein"
+_PALM_DIR       = "result/03_RDRP_identification/8b_palm_extracted"
+_NR_DIR         = "result/03_RDRP_identification/9_nr_viral_check"
+_FINAL_DIR      = "result/03_RDRP_identification/10_final"
+_TAXDIR         = "result/03_RDRP_identification/11_taxonomic_assignment"
+_CLUSTER_DIR    = _FINAL_DIR + "/nr_filtered_cluster"
+_PHYLUM_DIR     = "result/03_RDRP_identification/22_phylum_cluster"
+
+_RDRPCATCH_TAX_QUERIES = {
+    "full_length":   _FINAL_DIR + "/nr_filtered/combined_full.faa",
+    "palm_core":     _FINAL_DIR + "/nr_filtered/combined_palm_core.faa",
+    "palm_extended": _FINAL_DIR + "/nr_filtered/combined_palm_extended.faa",
+}
+
+_TAXDIR21 = "result/03_RDRP_identification/21_taxonomic_assignment_cluster"
+
+_CLUSTER_TAX_QUERIES = {
+    "full_length":   _CLUSTER_DIR + "/combined_full_c90.faa",
+    "palm_core":     _CLUSTER_DIR + "/combined_palm_core_c90.faa",
+    "palm_extended": _CLUSTER_DIR + "/combined_palm_extended_c90.faa",
+}
+
+# Source FASTA per protein category:
+#   RdRpCATCH → 2_palmscan rdrp_trimmed.faa       (palmscan output on RC AA)
+#   LucaProt  → 3_lucaprot lucaprot_rdrp_trimmed.faa (palmscan output on LP proteins)
+_PROTEIN_SOURCE_KEY = {"RdRpCATCH": "ps", "LucaProt": "lpt"}
+
+
+rule all:
+    input:
+        expand(
+            RDRP_DIR + "/{sample}/{sample}_scaffolds_rename_" + str(MIN_LEN) + "_rdrpcatch_output_annotated.tsv",
+            sample=config["rna_samples"]
+        ),
+        expand(
+            config["palmscan_output_dir"] + "/{sample}/{sample}_palmscan_hits.tsv",
+            sample=config["rna_samples"]
+        ),
+        ictv_targets(),
+        lucaprot_targets(),
+        expand(_MERGE_DIR + "/{sample}/{sample}_rdrp_merged.tsv", sample=config["rna_samples"]),
+        _MERGE_DIR + "/all_samples_rdrp_merged.tsv",
+        expand(_LIST_DIR + "/{list_name}.txt", list_name=_SOURCE_LISTS),
+        expand(_CONTIG_DIR + "/{list_name}.fasta", list_name=_SOURCE_LISTS),
+        _NO_RDRP_DIR + "/no_rdrp.txt",
+        _NO_RDRP_DIR + "/no_rdrp.fasta",
+        expand(_PROTEIN_DIR + "/{cat}.faa", cat=["RdRpCATCH", "LucaProt"]),
+        _PALM_DIR + "/RdRpCATCH/palm_regions.tsv",
+        _PALM_DIR + "/LucaProt/palm_regions.tsv",
+        _MERGE_DIR + "/multi_region_contigs_summary.tsv",
+        _PROTEIN_DIR + "/final_proteins_summary.tsv",
+        expand(_NR_DIR + "/{cat}_viral_confirmed.faa", cat=["RdRpCATCH", "LucaProt"]),
+        _FINAL_DIR + "/final_rdrp_merged.tsv",
+        _FINAL_DIR + "/final_contigs.fasta",
+        _FINAL_DIR + "/all/RdRpCATCH_full.faa",
+        _FINAL_DIR + "/all/LucaProt_full.faa",
+        _FINAL_DIR + "/nr_filtered/RdRpCATCH.faa",
+        _FINAL_DIR + "/nr_filtered/LucaProt.faa",
+        _FINAL_DIR + "/nr_filtered/RdRpCATCH_full.faa",
+        _FINAL_DIR + "/nr_filtered/LucaProt_full.faa",
+        _FINAL_DIR + "/all/combined_full.faa",
+        _FINAL_DIR + "/all/combined_palm_core.faa",
+        _FINAL_DIR + "/all/combined_palm_extended.faa",
+        _FINAL_DIR + "/all/combined_palm_regions.tsv",
+        _FINAL_DIR + "/nr_filtered/combined.faa",
+        _FINAL_DIR + "/nr_filtered/combined_full.faa",
+        _FINAL_DIR + "/nr_filtered/combined_palm_core.faa",
+        _FINAL_DIR + "/nr_filtered/combined_palm_extended.faa",
+        _FINAL_DIR + "/nr_filtered/combined_palm_regions.tsv",
+        expand(_TAXDIR + "/{query}/{query}_diamond_rvmt_annotated.tsv", query=list(_RDRPCATCH_TAX_QUERIES.keys())),
+        _CLUSTER_DIR + "/combined_full_c90.faa",
+        _CLUSTER_DIR + "/combined_palm_core_c90.faa",
+        _CLUSTER_DIR + "/combined_palm_extended_c90.faa",
+        _TAXDIR21 + "/full_length/full_length_diamond_rvmt_annotated.tsv",
+        _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophit.tsv",
+        expand(_PHYLUM_DIR + "/{query}_phylum", query=list(_CLUSTER_TAX_QUERIES.keys())),
+        expand(_PHYLUM_DIR + "/full_length_{rank}", rank=["class", "order", "family"]),
+        expand(_PHYLUM_DIR + "/{palmset}_{rank}",
+               palmset=["palm_core", "palm_extended"], rank=["class", "order", "family"]),
+
+
+# ── Step 1: RdRpCATCH (samples) ──────────────────────────────────────────────
+
+rule rdrpcatch:
+    input:
+        config["rna_reformated_scaffolds_dir"] + "/rename_" + str(MIN_LEN) + "/{sample}_scaffolds_rename_" + str(MIN_LEN) + ".fasta"
+    output:
+        tsv      = RDRP_DIR + "/{sample}/{sample}_scaffolds_rename_" + str(MIN_LEN) + "_rdrpcatch_output_annotated.tsv",
+        aa_fasta = RDRP_DIR + "/{sample}/{sample}_scaffolds_rename_" + str(MIN_LEN) + "_rdrpcatch_fasta/{sample}_scaffolds_rename_" + str(MIN_LEN) + "_trimmed_aminoacid_sequences.fasta"
+    log:
+        log = config["rdrp_log_dir"] + "/rdrpcatch/{sample}.log",
+        err = config["rdrp_log_dir"] + "/rdrpcatch/{sample}.err"
+    params:
+        output_dir = RDRP_DIR + "/{sample}",
+        seq_type   = config["rdrp_catch"]["seq_type"],
+        db_dir     = config["rdrp_catch"]["db_dir"],
+        db_options = config["rdrp_catch"]["db_options"]
+    threads: config["rdrp_catch"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["regular_memory"],
+        runtime         = config["rdrp_catch"]["runtime"],
+        cpus_per_task   = config["rdrp_catch"]["threads"],
+        slurm_partition = config["regular_partition"],
+        slurm_account   = config["account"]
+    conda:
+        "../envs/rdrp_catch.yaml"
+    shell:
+        """
+        mkdir -p {params.output_dir}
+        mkdir -p $(dirname {log.log})
+        rdrpcatch scan --input {input} \
+                  --output {params.output_dir} \
+                  --cpus {threads} \
+                  --seq-type {params.seq_type} \
+                  --db-dir {params.db_dir} \
+                  --db-options {params.db_options} \
+                  --extended-output \
+                  --overwrite \
+                  > {log.log} 2> {log.err}
+        """
+
+
+# ── Step 2: palm_annot (samples) ──────────────────────────────────────────────
+
+rule palm_annot:
+    input:
+        RDRP_DIR + "/{sample}/{sample}_scaffolds_rename_" + str(MIN_LEN) + "_rdrpcatch_fasta/{sample}_scaffolds_rename_" + str(MIN_LEN) + "_trimmed_aminoacid_sequences.fasta"
+    output:
+        tsv     = config["palmscan_output_dir"] + "/{sample}/{sample}_palmscan_hits.tsv",
+        fev     = config["palmscan_output_dir"] + "/{sample}/{sample}_palm_annot.fev",
+        rdrp_aa = config["palmscan_output_dir"] + "/{sample}/{sample}_rdrp_trimmed.faa"
+    log:
+        log = config["rdrp_log_dir"] + "/palm_annot/{sample}.log",
+        err = config["rdrp_log_dir"] + "/palm_annot/{sample}.err"
+    params:
+        output_dir   = config["palmscan_output_dir"] + "/{sample}",
+        palm_annot_py = config["palm_annot"]["install_dir"] + "/py/palm_annot.py",
+        fev2tsv_py   = config["palm_annot"]["install_dir"] + "/py/fev2tsv.py",
+        seqtype      = config["palm_annot"]["seqtype"],
+        minscore     = config["palm_annot"]["minscore"],
+        minpssmscore = config["palm_annot"]["minpssmscore"],
+        tmpdir       = config["palm_annot"]["tmpdir"]
+    threads: config["palm_annot"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["regular_memory"],
+        runtime         = config["palm_annot"]["runtime"],
+        cpus_per_task   = config["palm_annot"]["threads"],
+        slurm_partition = config["regular_partition"],
+        slurm_account   = config["account"]
+    conda:
+        "../envs/palm_annot.yaml"
+    shell:
+        """
+        mkdir -p {params.output_dir} {params.tmpdir}
+        mkdir -p $(dirname {log.log})
+        python {params.palm_annot_py} \
+            --input {input} \
+            --seqtype {params.seqtype} \
+            --fev {output.fev} \
+            --rdrp {output.rdrp_aa} \
+            --minscore {params.minscore} \
+            --minpssmscore {params.minpssmscore} \
+            --threads {threads} \
+            --tmpdir {params.tmpdir} \
+            > {log.log} 2> {log.err}
+        python {params.fev2tsv_py} \
+            --input {output.fev} \
+            --output {output.tsv} \
+            --header yes \
+            >> {log.log} 2>> {log.err}
+        """
+
+
+# ── Step 3: ORFfinder + LucaProt (samples, optional) ─────────────────────────
+
+if config["lucaprot_rdrp"]["use"]:
+
+    rule orffinder:
+        input:
+            config["rna_reformated_scaffolds_dir"] + "/rename_" + str(MIN_LEN) + "/{sample}_scaffolds_rename_" + str(MIN_LEN) + ".fasta"
+        output:
+            aa = config["orffinder_dir"] + "/{sample}/{sample}_orfs.faa"
+        log:
+            log = config["rdrp_log_dir"] + "/orffinder/{sample}.log",
+            err = config["rdrp_log_dir"] + "/orffinder/{sample}.err"
+        conda:
+            "../envs/orffinder.yaml"
+        threads: config["orffinder"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["orffinder"]["memory"],
+            runtime         = config["orffinder"]["runtime"],
+            cpus_per_task   = config["orffinder"]["threads"],
+            slurm_partition = config["orffinder"]["partition"],
+            slurm_account   = config["orffinder"]["account"]
+        params:
+            out_dir    = config["orffinder_dir"] + "/{sample}",
+            min_length = config["orffinder"]["min_length"],
+            strand     = config["orffinder"]["strand"]
+        shell:
+            """
+            mkdir -p {params.out_dir}
+            mkdir -p $(dirname {log.log})
+            ORFfinder -in {input} \
+                -ml {params.min_length} \
+                -strand {params.strand} \
+                -g 1 \
+                -s 2 \
+                -out {output.aa} \
+                -outfmt 0 \
+                > {log.log} 2> {log.err}
+            """
+
+    rule lucaprot_rdrp:
+        input:
+            fasta  = config["orffinder_dir"] + "/{sample}/{sample}_orfs.faa",
+            marker = config["lucaprot"]["marker_db"]
+        output:
+            csv = config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_rdrp.csv"
+        log:
+            log = config["rdrp_log_dir"] + "/lucaprot/{sample}.log",
+            err = config["rdrp_log_dir"] + "/lucaprot/{sample}.err"
+        conda:
+            "../envs/lucaprot.yaml"
+        threads: config["lucaprot_rdrp"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["lucaprot_rdrp"]["memory"],
+            runtime         = config["lucaprot_rdrp"]["runtime"],
+            cpus_per_task   = config["lucaprot_rdrp"]["threads"],
+            slurm_partition = config["lucaprot_rdrp"]["partition"],
+            slurm_account   = config["lucaprot_rdrp"]["account"],
+            slurm_extra     = "'--gpus-per-task={}'".format(config["lucaprot_rdrp"]["gpus"]) if config["lucaprot_rdrp"]["gpu_id"] >= 0 else ""
+        params:
+            install_dir           = config["lucaprot"]["install_dir"],
+            db_dir                = config["lucaprot"]["db_dir"],
+            gpu_id                = config["lucaprot_rdrp"]["gpu_id"],
+            gpu_devices           = config["lucaprot_rdrp"]["gpu_devices"],
+            truncation_seq_length = config["lucaprot_rdrp"]["truncation_seq_length"],
+            dataset_name          = "rdrp_40_extend",
+            dataset_type          = "protein",
+            task_type             = "binary_class",
+            model_type            = "sefn",
+            time_str              = config["lucaprot_rdrp"]["time_str"],
+            step                  = config["lucaprot_rdrp"]["step"],
+            threshold             = config["lucaprot_rdrp"]["threshold"],
+            print_per_number      = config["lucaprot_rdrp"]["print_per_number"],
+            output_dir            = config["lucaprot_output_dir"] + "/{sample}"
+        shell:
+            """
+            mkdir -p {params.output_dir}
+            mkdir -p $(dirname {log.log})
+            fasta_abs=$(realpath {input.fasta})
+            out_abs=$(realpath {output.csv})
+            db_abs=$(realpath {params.db_dir})
+            log_abs=$(realpath {log.log})
+            err_abs=$(realpath {log.err})
+
+            if [ "{params.gpu_id}" -ge 0 ]; then
+                export CUDA_VISIBLE_DEVICES="{params.gpu_devices}"
+            fi
+
+            cd {params.install_dir}/src
+            python predict_many_samples.py \
+                --fasta_file $fasta_abs \
+                --save_file $out_abs \
+                --truncation_seq_length {params.truncation_seq_length} \
+                --dataset_name {params.dataset_name} \
+                --dataset_type {params.dataset_type} \
+                --task_type {params.task_type} \
+                --model_type {params.model_type} \
+                --time_str {params.time_str} \
+                --step {params.step} \
+                --threshold {params.threshold} \
+                --print_per_number {params.print_per_number} \
+                --gpu_id {params.gpu_id} \
+                --torch_hub_dir $db_abs \
+                > $log_abs 2> $err_abs
+            """
+
+
+# ── Step 4: Merge RdRpCATCH + palmscan + lucaprot per sample ──────────────────
+
+_LUCAPROT_THRESHOLD_STR     = "{:.6f}".format(config["lucaprot_rdrp"]["threshold"])
+_LUCAPROT_FILTER_THRESHOLD  = config["lucaprot_rdrp"].get("filter_threshold", None)
+_LUCAPROT_INPUT_STR         = "{:.6f}".format(0.5)   # always read from 0.5 base CSV
+_LUCAPROT_ACTIVE_STR        = (
+    "{:.6f}".format(_LUCAPROT_FILTER_THRESHOLD)
+    if _LUCAPROT_FILTER_THRESHOLD is not None
+    else _LUCAPROT_THRESHOLD_STR
+)
+
+
+# ── Step 3b-pre: Filter lucaprot CSV to higher threshold (optional) ───────────
+# Reads the base 0.5 CSV and keeps only rows with prob >= filter_threshold.
+# Produces RdRPs_only_using_threshold{filter_threshold}.csv without re-running LucaProt.
+
+if _LUCAPROT_FILTER_THRESHOLD is not None:
+
+    rule filter_lucaprot_threshold:
+        input:
+            csv = config["lucaprot_output_dir"] + "/{sample}/RdRPs_only_using_threshold" + _LUCAPROT_INPUT_STR + ".csv",
+        output:
+            csv = config["lucaprot_output_dir"] + "/{sample}/RdRPs_only_using_threshold" + _LUCAPROT_ACTIVE_STR + ".csv",
+        conda:
+            "../envs/python.yaml"
+        threads: 1
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = 1,
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        params:
+            threshold = _LUCAPROT_FILTER_THRESHOLD,
+        log:
+            out = "log/03_RDRP_identification/lucaprot_filter/{sample}.log",
+            err = "log/03_RDRP_identification/lucaprot_filter/{sample}.err",
+        shell:
+            """
+            mkdir -p $(dirname {output.csv}) log/03_RDRP_identification/lucaprot_filter
+            python scripts/03_RDRP_identification/filter_lucaprot_threshold.py \
+                --input     {input.csv} \
+                --output    {output.csv} \
+                --threshold {params.threshold} \
+                > {log.out} 2> {log.err}
+            """
+
+
+# ── Step 3b: Extract LucaProt proteins per sample for palm_annot ─────────────
+
+rule extract_lucaprot_proteins_persample:
+    input:
+        csv = config["lucaprot_output_dir"] + "/{sample}/RdRPs_only_using_threshold" + _LUCAPROT_ACTIVE_STR + ".csv",
+    output:
+        faa = config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_proteins.faa",
+    conda:
+        "../envs/python.yaml"
+    threads: 1
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = 1,
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/lucaprot_palmscan/{sample}.extract.log",
+        err = "log/03_RDRP_identification/lucaprot_palmscan/{sample}.extract.err",
+    shell:
+        """
+        mkdir -p $(dirname {output.faa}) log/03_RDRP_identification/lucaprot_palmscan
+        python scripts/03_RDRP_identification/extract_lucaprot_proteins_persample.py \
+            --csv    {input.csv} \
+            --output {output.faa} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 3c: palm_annot on LucaProt proteins per sample ───────────────────────
+
+rule palm_annot_lucaprot_persample:
+    input:
+        aa = config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_proteins.faa",
+    output:
+        tsv     = config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_palmscan_hits.tsv",
+        fev     = config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_palm_annot.fev",
+        rdrp_aa = config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_rdrp_trimmed.faa",
+    conda:
+        "../envs/palm_annot.yaml"
+    threads: config["palm_annot"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["palm_annot"]["memory"],
+        runtime         = config["palm_annot"]["runtime"],
+        cpus_per_task   = config["palm_annot"]["threads"],
+        slurm_partition = config["palm_annot"]["partition"],
+        slurm_account   = config["palm_annot"]["account"],
+    params:
+        palm_annot_py = config["palm_annot"]["install_dir"] + "/py/palm_annot.py",
+        fev2tsv_py    = config["palm_annot"]["install_dir"] + "/py/fev2tsv.py",
+        seqtype       = config["palm_annot"]["seqtype"],
+        minscore      = config["palm_annot"]["minscore"],
+        minpssmscore  = config["palm_annot"]["minpssmscore"],
+        tmpdir        = config["palm_annot"]["tmpdir"] + "/lucaprot/{sample}",
+    log:
+        out = "log/03_RDRP_identification/lucaprot_palmscan/{sample}.palm_annot.log",
+        err = "log/03_RDRP_identification/lucaprot_palmscan/{sample}.palm_annot.err",
+    shell:
+        """
+        mkdir -p {params.tmpdir}
+        python {params.palm_annot_py} \
+            --input        {input.aa} \
+            --seqtype      {params.seqtype} \
+            --fev          {output.fev} \
+            --rdrp         {output.rdrp_aa} \
+            --minscore     {params.minscore} \
+            --minpssmscore {params.minpssmscore} \
+            --threads      {threads} \
+            --tmpdir       {params.tmpdir} \
+            > {log.out} 2> {log.err}
+        python {params.fev2tsv_py} \
+            --input  {output.fev} \
+            --output {output.tsv} \
+            --header yes \
+            >> {log.out} 2>> {log.err}
+        """
+
+
+rule merge_rdrp_results:
+    input:
+        rdrpcatch        = RDRP_DIR + "/{sample}/{sample}_scaffolds_rename_" + str(MIN_LEN) + "_rdrpcatch_output_annotated.tsv",
+        palmscan         = config["palmscan_output_dir"] + "/{sample}/{sample}_palmscan_hits.tsv",
+        lucaprot         = config["lucaprot_output_dir"] + "/{sample}/RdRPs_only_using_threshold" + _LUCAPROT_ACTIVE_STR + ".csv",
+        lucaprot_palmscan = config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_palmscan_hits.tsv",
+    output:
+        merged  = _MERGE_DIR + "/{sample}/{sample}_rdrp_merged.tsv",
+        regions = _MERGE_DIR + "/{sample}/{sample}_rdrp_regions.tsv",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    params:
+        script = config["scripts"]["merge_rdrp_results"],
+    log:
+        out = "log/03_RDRP_identification/merge/{sample}.log",
+        err = "log/03_RDRP_identification/merge/{sample}.err",
+    shell:
+        """
+        mkdir -p {_MERGE_DIR}/{wildcards.sample} log/03_RDRP_identification/merge
+        python {params.script} \
+            --rdrpcatch          {input.rdrpcatch} \
+            --palmscan           {input.palmscan} \
+            --lucaprot           {input.lucaprot} \
+            --lucaprot-palmscan  {input.lucaprot_palmscan} \
+            --output              {output.merged} \
+            --output-regions      {output.regions} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 5: Combine all per-sample merged tables into one final table ──────────
+
+rule combine_rdrp_all_samples:
+    input:
+        merged  = expand(_MERGE_DIR + "/{sample}/{sample}_rdrp_merged.tsv",  sample=config["rna_samples"]),
+        regions = expand(_MERGE_DIR + "/{sample}/{sample}_rdrp_regions.tsv", sample=config["rna_samples"]),
+    output:
+        combined         = _MERGE_DIR + "/all_samples_rdrp_merged.tsv",
+        combined_regions = _MERGE_DIR + "/all_samples_rdrp_regions.tsv",
+        rc       = _LIST_DIR + "/RdRpCATCH.txt",
+        lp       = _LIST_DIR + "/LucaProt.txt",
+        any_rdrp = _LIST_DIR + "/any_rdrp.txt",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    params:
+        script = config["scripts"]["combine_rdrp_all_samples"],
+    log:
+        out = "log/03_RDRP_identification/merge/all_samples.log",
+        err = "log/03_RDRP_identification/merge/all_samples.err",
+    shell:
+        """
+        mkdir -p {_MERGE_DIR} {_LIST_DIR} log/03_RDRP_identification/merge
+        python {params.script} \
+            --inputs         {input.merged} \
+            --input-regions  {input.regions} \
+            --output         {output.combined} \
+            --output-regions {output.combined_regions} \
+            --list-dir       {_LIST_DIR} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 5b: Summarize contigs with >1 surviving candidate region ────────────
+# Shows, for every contig where dedup left more than one candidate region,
+# every candidate's source/length/strand/motif and whether it's the one the
+# longest-per-contig selection actually kept. Useful for auditing whether
+# "keep longest" picked sensibly vs. an overlap-aware alternative.
+
+rule summarize_multi_region_contigs:
+    input:
+        regions = _MERGE_DIR + "/all_samples_rdrp_regions.tsv",
+        merged  = _MERGE_DIR + "/all_samples_rdrp_merged.tsv",
+    output:
+        _MERGE_DIR + "/multi_region_contigs_summary.tsv",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/merge/multi_region_summary.log",
+        err = "log/03_RDRP_identification/merge/multi_region_summary.err",
+    shell:
+        """
+        mkdir -p {_MERGE_DIR} log/03_RDRP_identification/merge
+        python scripts/03_RDRP_identification/summarize_multi_region_contigs.py \
+            --regions {input.regions} \
+            --merged  {input.merged} \
+            --output  {output} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 6: Concatenate all rename_1000 fastas, then extract per-list ─────────
+
+_ALL_FASTA = _CONTIG_DIR + "/all_samples_contigs_combined.fasta"
+_RENAME_DIR = config["rna_reformated_scaffolds_dir"] + "/rename_" + str(MIN_LEN)
+
+
+rule cat_all_sample_contigs:
+    input:
+        expand(_RENAME_DIR + "/{sample}_scaffolds_rename_" + str(MIN_LEN) + ".fasta",
+               sample=config["rna_samples"]),
+    output:
+        fasta = _ALL_FASTA,
+    threads: 1
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = 1,
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        err = "log/03_RDRP_identification/5_RdRp_contig/cat_fastas.err",
+    shell:
+        """
+        mkdir -p {_CONTIG_DIR} log/03_RDRP_identification/5_RdRp_contig
+        cat {input} > {output.fasta} 2> {log.err}
+        """
+
+
+rule seqkit_extract_rdrp:
+    input:
+        fasta   = _ALL_FASTA,
+        id_list = _LIST_DIR + "/{list_name}.txt",
+    output:
+        fasta = _CONTIG_DIR + "/{list_name}.fasta",
+    wildcard_constraints:
+        list_name = "|".join(_SOURCE_LISTS),
+    conda:
+        "../envs/seqkit-spade.yaml"
+    threads: config["seqkit"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["seqkit"]["memory"],
+        runtime         = config["seqkit"]["runtime"],
+        cpus_per_task   = config["seqkit"]["threads"],
+        slurm_partition = config["seqkit"]["partition"],
+        slurm_account   = config["seqkit"]["account"],
+    log:
+        err = "log/03_RDRP_identification/5_RdRp_contig/{list_name}.err",
+    shell:
+        """
+        mkdir -p {_CONTIG_DIR} log/03_RDRP_identification/5_RdRp_contig
+        seqkit grep \
+            --pattern-file {input.id_list} \
+            --threads {threads} \
+            {input.fasta} \
+            > {output.fasta} \
+            2> {log.err}
+        """
+
+
+# ── Step 7: Extract contigs that passed NO RdRP filter ───────────────────────
+
+rule extract_no_rdrp_contigs:
+    input:
+        fasta    = _ALL_FASTA,
+        any_rdrp = _LIST_DIR + "/any_rdrp.txt",
+    output:
+        txt   = _NO_RDRP_DIR + "/no_rdrp.txt",
+        fasta = _NO_RDRP_DIR + "/no_rdrp.fasta",
+    conda:
+        "../envs/seqkit-spade.yaml"
+    threads: config["seqkit"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["seqkit"]["memory"],
+        runtime         = config["seqkit"]["runtime"],
+        cpus_per_task   = config["seqkit"]["threads"],
+        slurm_partition = config["seqkit"]["partition"],
+        slurm_account   = config["seqkit"]["account"],
+    log:
+        err = "log/03_RDRP_identification/7_no_RDRP_contig/extract.err",
+    shell:
+        """
+        mkdir -p {_NO_RDRP_DIR} log/03_RDRP_identification/7_no_RDRP_contig
+        seqkit grep \
+            --pattern-file {input.any_rdrp} \
+            --threads {threads} \
+            --invert-match \
+            {input.fasta} \
+            > {output.fasta} \
+            2> {log.err}
+        seqkit seq --name --only-id {output.fasta} \
+            > {output.txt} \
+            2>> {log.err}
+        """
+
+
+# ── Step 8: Extract per-source RdRP protein FASTAs ───────────────────────────
+# Two source FASTAs (concatenated across all samples):
+#   ps_trimmed  — 2_palmscan rdrp_trimmed.faa         → RdRpCATCH
+#   lp_trimmed  — 3_lucaprot lucaprot_rdrp_trimmed.faa → LucaProt
+
+_ALL_PS_TRIMMED = _PROTEIN_DIR + "/all_samples_ps_trimmed.faa"
+_ALL_LP_TRIMMED = _PROTEIN_DIR + "/all_samples_lp_trimmed.faa"
+
+_PROTEIN_SOURCE_FASTA = {
+    "ps":  _ALL_PS_TRIMMED,
+    "lpt": _ALL_LP_TRIMMED,
+}
+
+
+rule cat_ps_trimmed_fastas:
+    input:
+        expand(config["palmscan_output_dir"] + "/{sample}/{sample}_rdrp_trimmed.faa",
+               sample=config["rna_samples"]),
+    output:
+        fasta = _ALL_PS_TRIMMED,
+    threads: 1
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = 1,
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        err = "log/03_RDRP_identification/8_RdRp_protein/cat_ps_trimmed.err",
+    shell:
+        """
+        mkdir -p {_PROTEIN_DIR} log/03_RDRP_identification/8_RdRp_protein
+        cat {input} > {output.fasta} 2> {log.err}
+        """
+
+
+rule cat_lp_trimmed_fastas:
+    input:
+        expand(config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_rdrp_trimmed.faa",
+               sample=config["rna_samples"]),
+    output:
+        fasta = _ALL_LP_TRIMMED,
+    threads: 1
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = 1,
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        err = "log/03_RDRP_identification/8_RdRp_protein/cat_lp_trimmed.err",
+    shell:
+        """
+        mkdir -p {_PROTEIN_DIR} log/03_RDRP_identification/8_RdRp_protein
+        cat {input} > {output.fasta} 2> {log.err}
+        """
+
+
+rule write_protein_id_lists:
+    input:
+        merged = _MERGE_DIR + "/all_samples_rdrp_merged.tsv",
+    output:
+        expand(_PROTEIN_DIR + "/{cat}_ids.txt", cat=["RdRpCATCH", "LucaProt"]),
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    params:
+        script = config["scripts"]["write_protein_id_lists"],
+        outdir = _PROTEIN_DIR,
+    log:
+        out = "log/03_RDRP_identification/8_RdRp_protein/write_ids.log",
+        err = "log/03_RDRP_identification/8_RdRp_protein/write_ids.err",
+    shell:
+        """
+        mkdir -p {params.outdir} log/03_RDRP_identification/8_RdRp_protein
+        python {params.script} \
+            --merged {input.merged} \
+            --outdir {params.outdir} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 8b: Human-readable index of the two final protein FASTAs ───────────
+# One row per contig: which FASTA it's in (RdRpCATCH.faa / LucaProt.faa),
+# the exact protein_id used to extract it, region coords, and palmscan
+# motif result. A lookup table for RdRpCATCH.faa + LucaProt.faa.
+
+rule summarize_final_proteins:
+    input:
+        merged = _MERGE_DIR + "/all_samples_rdrp_merged.tsv",
+    output:
+        _PROTEIN_DIR + "/final_proteins_summary.tsv",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/8_RdRp_protein/final_proteins_summary.log",
+        err = "log/03_RDRP_identification/8_RdRp_protein/final_proteins_summary.err",
+    shell:
+        """
+        mkdir -p {_PROTEIN_DIR} log/03_RDRP_identification/8_RdRp_protein
+        python scripts/03_RDRP_identification/summarize_final_proteins.py \
+            --merged {input.merged} \
+            --output {output} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule extract_palm_regions:
+    input:
+        rdrpcatch_motif = _PROTEIN_DIR + "/RdRpCATCH.faa",
+        lucaprot_motif  = _PROTEIN_DIR + "/LucaProt.faa",
+        rdrpcatch_seqs  = expand(
+            RDRP_DIR + "/{sample}/{sample}_scaffolds_rename_" + str(MIN_LEN) +
+            "_rdrpcatch_fasta/{sample}_scaffolds_rename_" + str(MIN_LEN) +
+            "_trimmed_aminoacid_sequences.fasta",
+            sample=config["rna_samples"]
+        ),
+        lucaprot_seqs   = expand(
+            config["lucaprot_output_dir"] + "/{sample}/{sample}_lucaprot_proteins.faa",
+            sample=config["rna_samples"]
+        ),
+        script = "scripts/03_RDRP_identification/extract_palm_regions.py",
+    output:
+        rc_tsv      = _PALM_DIR + "/RdRpCATCH/palm_regions.tsv",
+        lp_tsv      = _PALM_DIR + "/LucaProt/palm_regions.tsv",
+        rc_full     = _PALM_DIR + "/RdRpCATCH/rdrp_full.faa",
+        lp_full     = _PALM_DIR + "/LucaProt/rdrp_full.faa",
+        rc_core     = _PALM_DIR + "/RdRpCATCH/palm_core.faa",
+        lp_core     = _PALM_DIR + "/LucaProt/palm_core.faa",
+        rc_extended = _PALM_DIR + "/RdRpCATCH/palm_extended.faa",
+        lp_extended = _PALM_DIR + "/LucaProt/palm_extended.faa",
+    params:
+        outdir         = _PALM_DIR,
+        rdrpcatch_glob = RDRP_DIR + "/**/*_trimmed_aminoacid_sequences.fasta",
+        lucaprot_glob  = config["lucaprot_output_dir"] + "/**/*_lucaprot_proteins.faa",
+        flank          = 150,
+    log:
+        out = "log/03_RDRP_identification/8b_palm_extracted/extract_palm_regions.log",
+        err = "log/03_RDRP_identification/8b_palm_extracted/extract_palm_regions.err",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        """
+        mkdir -p {params.outdir} log/03_RDRP_identification/8b_palm_extracted
+        python {input.script} \
+            --rdrpcatch-motif {input.rdrpcatch_motif} \
+            --rdrpcatch-seqs  "{params.rdrpcatch_glob}" \
+            --lucaprot-motif  {input.lucaprot_motif} \
+            --lucaprot-seqs   "{params.lucaprot_glob}" \
+            --outdir          {params.outdir} \
+            --flank           {params.flank} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule extract_proteins:
+    input:
+        fasta   = lambda wc: _PROTEIN_SOURCE_FASTA[_PROTEIN_SOURCE_KEY[wc.pcat]],
+        id_list = _PROTEIN_DIR + "/{pcat}_ids.txt",
+    output:
+        fasta = _PROTEIN_DIR + "/{pcat}.faa",
+    wildcard_constraints:
+        pcat = "RdRpCATCH|LucaProt",
+    conda:
+        "../envs/seqkit-spade.yaml"
+    threads: config["seqkit"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["seqkit"]["memory"],
+        runtime         = config["seqkit"]["runtime"],
+        cpus_per_task   = config["seqkit"]["threads"],
+        slurm_partition = config["seqkit"]["partition"],
+        slurm_account   = config["seqkit"]["account"],
+    log:
+        err = "log/03_RDRP_identification/8_RdRp_protein/{pcat}.err",
+    shell:
+        """
+        mkdir -p {_PROTEIN_DIR} log/03_RDRP_identification/8_RdRp_protein
+        seqkit grep \
+            --pattern-file {input.id_list} \
+            --threads {threads} \
+            {input.fasta} \
+            > {output.fasta} \
+            2> {log.err}
+        """
+
+
+# ── Step 10: nr viral-origin check (Diamond BLASTp) ──────────────────────────
+# Every final RdRp candidate protein (RdRpCATCH.faa / LucaProt.faa) is BLASTed
+# against nr. Sequences whose top hit (e-value < config threshold) does not
+# resolve to an RNA virus (Riboviria) taxon are excluded -- this catches
+# endogenous viral elements and other false positives that pass the motif
+# filter but are not actually of viral origin.
+
+rule diamond_blastp_nr_riboviria:
+    input:
+        fasta     = _PALM_DIR + "/{pcat}/rdrp_full.faa",
+        db_marker = config["diamond_nr"]["db_marker"],
+    output:
+        tsv = _NR_DIR + "/{pcat}_diamond_nr_riboviria.tsv",
+    wildcard_constraints:
+        pcat = "RdRpCATCH|LucaProt",
+    conda:
+        "../envs/diamond.yaml"
+    threads: config["diamond_nr"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["diamond_nr"]["memory"],
+        runtime         = config["diamond_nr"]["runtime"],
+        cpus_per_task   = config["diamond_nr"]["threads"],
+        slurm_partition = config["diamond_nr"]["partition"],
+        slurm_account   = config["diamond_nr"]["account"],
+    params:
+        dmnd_db      = config["diamond_nr"]["dmnd_db"],
+        evalue       = config["diamond_nr"]["evalue"],
+        riboviria_taxid = config["diamond_nr"]["riboviria_taxid"],
+    log:
+        out = "log/03_RDRP_identification/9_nr_viral_check/{pcat}_diamond.log",
+        err = "log/03_RDRP_identification/9_nr_viral_check/{pcat}_diamond.err",
+    shell:
+        """
+        mkdir -p {_NR_DIR} log/03_RDRP_identification/9_nr_viral_check
+        diamond blastp \
+            -q {input.fasta} \
+            --db {params.dmnd_db} \
+            -p {threads} \
+            -k 1 \
+            --evalue {params.evalue} \
+            --outfmt 6 qseqid sseqid evalue bitscore \
+            -o {output.tsv} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule annotate_nr_taxonomy:
+    input:
+        diamond  = _NR_DIR + "/{pcat}_diamond_nr_riboviria.tsv",
+        acc2tax  = config["diamond_nr"]["prot_accession2taxid"],
+        taxdump  = config["diamond_nr"]["taxdump_dir"],
+    output:
+        tsv = _NR_DIR + "/{pcat}_diamond_nr_riboviria.annotated.tsv",
+    wildcard_constraints:
+        pcat = "RdRpCATCH|LucaProt",
+    conda:
+        "../envs/python.yaml"
+    threads: config["diamond_nr"]["annotate_taxonomy_threads"]
+    resources:
+        mem_mb_per_cpu  = config["diamond_nr"]["annotate_taxonomy_memory"],
+        runtime         = config["diamond_nr"]["annotate_taxonomy_runtime"],
+        cpus_per_task   = config["diamond_nr"]["annotate_taxonomy_threads"],
+        slurm_partition = config["diamond_nr"]["annotate_taxonomy_partition"],
+        slurm_account   = config["diamond_nr"]["account"],
+    params:
+        riboviria_taxid = config["diamond_nr"]["riboviria_taxid"],
+    log:
+        out = "log/03_RDRP_identification/9_nr_viral_check/{pcat}_annotate_taxonomy.log",
+        err = "log/03_RDRP_identification/9_nr_viral_check/{pcat}_annotate_taxonomy.err",
+    shell:
+        """
+        mkdir -p {_NR_DIR} log/03_RDRP_identification/9_nr_viral_check
+        python scripts/03_RDRP_identification/annotate_nr_taxonomy.py \
+            --diamond        {input.diamond} \
+            --acc2tax        {input.acc2tax} \
+            --nodes          {input.taxdump}/nodes.dmp \
+            --riboviria-taxid {params.riboviria_taxid} \
+            --output         {output.tsv} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule filter_nr_viral_origin:
+    input:
+        diamond     = _NR_DIR + "/{pcat}_diamond_nr_riboviria.annotated.tsv",
+        diamond_raw = _NR_DIR + "/{pcat}_diamond_nr_riboviria.tsv",
+        fasta       = _PALM_DIR + "/{pcat}/rdrp_full.faa",
+    output:
+        fasta = _NR_DIR + "/{pcat}_viral_confirmed.faa",
+        table = _NR_DIR + "/{pcat}_nr_filter_table.tsv",
+    wildcard_constraints:
+        pcat = "RdRpCATCH|LucaProt",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/9_nr_viral_check/{pcat}_filter.log",
+        err = "log/03_RDRP_identification/9_nr_viral_check/{pcat}_filter.err",
+    shell:
+        """
+        mkdir -p {_NR_DIR} log/03_RDRP_identification/9_nr_viral_check
+        python scripts/03_RDRP_identification/filter_nr_viral_origin.py \
+            --diamond     {input.diamond} \
+            --diamond-raw {input.diamond_raw} \
+            --fasta       {input.fasta} \
+            --output-fasta {output.fasta} \
+            --output-table {output.table} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 9: Full RdRP pipeline for ICTV Riboviria reference sequences ────────
+# Path constants and ictv_targets() are defined near the top of the file.
+# Existing HPC results (RdRpCATCH, palmscan, lucaprot base CSV) are reused
+# automatically since output paths match what's already on disk.
+
+if config["ICTV"]["use"]:
+
+    # Step 9a: RdRpCATCH on ICTV fasta
+    rule rdrpcatch_ICTV:
+        input:
+            config["ICTV"]["fasta"]
+        output:
+            tsv      = _ICTV_RC_DIR + "/" + ICTV_STEM + "_rdrpcatch_output_annotated.tsv",
+            aa_fasta = _ICTV_RC_DIR + "/" + ICTV_STEM + "_rdrpcatch_fasta/" + ICTV_STEM + "_trimmed_aminoacid_sequences.fasta",
+        log:
+            log = "log/03_RDRP_identification/rdrpcatch/ICTV.log",
+            err = "log/03_RDRP_identification/rdrpcatch/ICTV.err",
+        params:
+            output_dir = _ICTV_RC_DIR,
+            seq_type   = config["rdrp_catch"]["seq_type"],
+            db_dir     = config["rdrp_catch"]["db_dir"],
+            db_options = config["rdrp_catch"]["db_options"],
+        threads: config["rdrp_catch"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["regular_memory"],
+            runtime         = config["rdrp_catch"]["runtime"],
+            cpus_per_task   = config["rdrp_catch"]["threads"],
+            slurm_partition = config["regular_partition"],
+            slurm_account   = config["account"],
+        conda:
+            "../envs/rdrp_catch.yaml"
+        shell:
+            """
+            mkdir -p {params.output_dir}
+            mkdir -p $(dirname {log.log})
+            rdrpcatch scan --input {input} \
+                      --output {params.output_dir} \
+                      --cpus {threads} \
+                      --seq-type {params.seq_type} \
+                      --db-dir {params.db_dir} \
+                      --db-options {params.db_options} \
+                      --extended-output \
+                      --overwrite \
+                      > {log.log} 2> {log.err}
+            """
+
+    # Step 9b: palm_annot on ICTV RdRpCATCH trimmed AA
+    rule palm_annot_ICTV:
+        input:
+            _ICTV_RC_DIR + "/" + ICTV_STEM + "_rdrpcatch_fasta/" + ICTV_STEM + "_trimmed_aminoacid_sequences.fasta"
+        output:
+            tsv     = _ICTV_PS_DIR + "/ICTV_palmscan_hits.tsv",
+            fev     = _ICTV_PS_DIR + "/ICTV_palm_annot.fev",
+            rdrp_aa = _ICTV_PS_DIR + "/ICTV_rdrp_trimmed.faa",
+        log:
+            log = "log/03_RDRP_identification/palm_annot/ICTV.log",
+            err = "log/03_RDRP_identification/palm_annot/ICTV.err",
+        params:
+            output_dir    = _ICTV_PS_DIR,
+            palm_annot_py = config["palm_annot"]["install_dir"] + "/py/palm_annot.py",
+            fev2tsv_py    = config["palm_annot"]["install_dir"] + "/py/fev2tsv.py",
+            seqtype       = config["palm_annot"]["seqtype"],
+            minscore      = config["palm_annot"]["minscore"],
+            minpssmscore  = config["palm_annot"]["minpssmscore"],
+            tmpdir        = config["palm_annot"]["tmpdir"] + "/ICTV",
+        threads: config["palm_annot"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["regular_memory"],
+            runtime         = config["palm_annot"]["runtime"],
+            cpus_per_task   = config["palm_annot"]["threads"],
+            slurm_partition = config["regular_partition"],
+            slurm_account   = config["account"],
+        conda:
+            "../envs/palm_annot.yaml"
+        shell:
+            """
+            mkdir -p {params.output_dir} {params.tmpdir}
+            mkdir -p $(dirname {log.log})
+            python {params.palm_annot_py} \
+                --input        {input} \
+                --seqtype      {params.seqtype} \
+                --fev          {output.fev} \
+                --rdrp         {output.rdrp_aa} \
+                --minscore     {params.minscore} \
+                --minpssmscore {params.minpssmscore} \
+                --threads      {threads} \
+                --tmpdir       {params.tmpdir} \
+                > {log.log} 2> {log.err}
+            python {params.fev2tsv_py} \
+                --input  {output.fev} \
+                --output {output.tsv} \
+                --header yes \
+                >> {log.log} 2>> {log.err}
+            """
+
+    # Step 9c: ORFfinder on ICTV fasta
+    rule orffinder_ICTV:
+        input:
+            config["ICTV"]["fasta"]
+        output:
+            aa = _ICTV_ORF_DIR + "/ICTV_orfs.faa",
+        log:
+            log = "log/03_RDRP_identification/orffinder/ICTV.log",
+            err = "log/03_RDRP_identification/orffinder/ICTV.err",
+        conda:
+            "../envs/orffinder.yaml"
+        threads: config["orffinder"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["orffinder"]["memory"],
+            runtime         = config["orffinder"]["runtime"],
+            cpus_per_task   = config["orffinder"]["threads"],
+            slurm_partition = config["orffinder"]["partition"],
+            slurm_account   = config["orffinder"]["account"],
+        params:
+            out_dir    = _ICTV_ORF_DIR,
+            min_length = config["orffinder"]["min_length"],
+            strand     = config["orffinder"]["strand"],
+        shell:
+            """
+            mkdir -p {params.out_dir}
+            mkdir -p $(dirname {log.log})
+            ORFfinder -in {input} \
+                -ml {params.min_length} \
+                -strand {params.strand} \
+                -g 1 \
+                -s 2 \
+                -out {output.aa} \
+                -outfmt 0 \
+                > {log.log} 2> {log.err}
+            """
+
+    # Step 9d: LucaProt on ICTV ORFs
+    rule lucaprot_ICTV:
+        input:
+            fasta  = _ICTV_ORF_DIR + "/ICTV_orfs.faa",
+            marker = config["lucaprot"]["marker_db"],
+        output:
+            csv = _ICTV_LP_DIR + "/ICTV_lucaprot_rdrp.csv",
+        log:
+            log = "log/03_RDRP_identification/lucaprot/ICTV.log",
+            err = "log/03_RDRP_identification/lucaprot/ICTV.err",
+        conda:
+            "../envs/lucaprot.yaml"
+        threads: config["lucaprot_rdrp"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["lucaprot_rdrp"]["memory"],
+            runtime         = config["lucaprot_rdrp"]["runtime"],
+            cpus_per_task   = config["lucaprot_rdrp"]["threads"],
+            slurm_partition = config["lucaprot_rdrp"]["partition"],
+            slurm_account   = config["lucaprot_rdrp"]["account"],
+            slurm_extra     = "'--gpus-per-task={}'".format(config["lucaprot_rdrp"]["gpus"]) if config["lucaprot_rdrp"]["gpu_id"] >= 0 else "",
+        params:
+            install_dir           = config["lucaprot"]["install_dir"],
+            db_dir                = config["lucaprot"]["db_dir"],
+            gpu_id                = config["lucaprot_rdrp"]["gpu_id"],
+            gpu_devices           = config["lucaprot_rdrp"]["gpu_devices"],
+            truncation_seq_length = config["lucaprot_rdrp"]["truncation_seq_length"],
+            dataset_name          = "rdrp_40_extend",
+            dataset_type          = "protein",
+            task_type             = "binary_class",
+            model_type            = "sefn",
+            time_str              = config["lucaprot_rdrp"]["time_str"],
+            step                  = config["lucaprot_rdrp"]["step"],
+            threshold             = config["lucaprot_rdrp"]["threshold"],
+            print_per_number      = config["lucaprot_rdrp"]["print_per_number"],
+            output_dir            = _ICTV_LP_DIR,
+        shell:
+            """
+            mkdir -p {params.output_dir}
+            mkdir -p $(dirname {log.log})
+            fasta_abs=$(realpath {input.fasta})
+            out_abs=$(realpath {output.csv})
+            db_abs=$(realpath {params.db_dir})
+            log_abs=$(realpath {log.log})
+            err_abs=$(realpath {log.err})
+
+            if [ "{params.gpu_id}" -ge 0 ]; then
+                export CUDA_VISIBLE_DEVICES="{params.gpu_devices}"
+            fi
+
+            cd {params.install_dir}/src
+            python predict_many_samples.py \
+                --fasta_file $fasta_abs \
+                --save_file $out_abs \
+                --truncation_seq_length {params.truncation_seq_length} \
+                --dataset_name {params.dataset_name} \
+                --dataset_type {params.dataset_type} \
+                --task_type {params.task_type} \
+                --model_type {params.model_type} \
+                --time_str {params.time_str} \
+                --step {params.step} \
+                --threshold {params.threshold} \
+                --print_per_number {params.print_per_number} \
+                --gpu_id {params.gpu_id} \
+                --torch_hub_dir $db_abs \
+                > $log_abs 2> $err_abs
+            """
+
+    # Step 9d-pre: filter lucaprot ICTV CSV to higher threshold (if configured)
+    if _LUCAPROT_FILTER_THRESHOLD is not None:
+
+        rule filter_lucaprot_threshold_ICTV:
+            input:
+                csv = _ICTV_LP_DIR + "/RdRPs_only_using_threshold" + _LUCAPROT_INPUT_STR + ".csv",
+            output:
+                csv = _ICTV_LP_DIR + "/RdRPs_only_using_threshold" + _LUCAPROT_ACTIVE_STR + ".csv",
+            conda:
+                "../envs/python.yaml"
+            threads: 1
+            resources:
+                mem_mb_per_cpu  = config["small_job"]["memory"],
+                runtime         = config["small_job"]["runtime"],
+                cpus_per_task   = 1,
+                slurm_partition = config["small_job"]["partition"],
+                slurm_account   = config["small_job"]["account"],
+            params:
+                threshold = _LUCAPROT_FILTER_THRESHOLD,
+            log:
+                out = "log/03_RDRP_identification/lucaprot_filter/ICTV.log",
+                err = "log/03_RDRP_identification/lucaprot_filter/ICTV.err",
+            shell:
+                """
+                mkdir -p $(dirname {output.csv}) log/03_RDRP_identification/lucaprot_filter
+                python scripts/03_RDRP_identification/filter_lucaprot_threshold.py \
+                    --input     {input.csv} \
+                    --output    {output.csv} \
+                    --threshold {params.threshold} \
+                    > {log.out} 2> {log.err}
+                """
+
+    # Step 9e: extract LucaProt ICTV proteins for palm_annot
+    rule extract_lucaprot_proteins_ICTV:
+        input:
+            csv = _ICTV_LP_DIR + "/RdRPs_only_using_threshold" + _LUCAPROT_ACTIVE_STR + ".csv",
+        output:
+            faa = _ICTV_LP_DIR + "/ICTV_lucaprot_proteins.faa",
+        conda:
+            "../envs/python.yaml"
+        threads: 1
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = 1,
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        log:
+            out = "log/03_RDRP_identification/lucaprot_palmscan/ICTV.extract.log",
+            err = "log/03_RDRP_identification/lucaprot_palmscan/ICTV.extract.err",
+        shell:
+            """
+            mkdir -p $(dirname {output.faa}) log/03_RDRP_identification/lucaprot_palmscan
+            python scripts/03_RDRP_identification/extract_lucaprot_proteins_persample.py \
+                --csv    {input.csv} \
+                --output {output.faa} \
+                > {log.out} 2> {log.err}
+            """
+
+    # Step 9f: palm_annot on ICTV LucaProt proteins
+    rule palm_annot_lucaprot_ICTV:
+        input:
+            aa = _ICTV_LP_DIR + "/ICTV_lucaprot_proteins.faa",
+        output:
+            tsv     = _ICTV_LP_DIR + "/ICTV_lucaprot_palmscan_hits.tsv",
+            fev     = _ICTV_LP_DIR + "/ICTV_lucaprot_palm_annot.fev",
+            rdrp_aa = _ICTV_LP_DIR + "/ICTV_lucaprot_rdrp_trimmed.faa",
+        conda:
+            "../envs/palm_annot.yaml"
+        threads: config["palm_annot"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["palm_annot"]["memory"],
+            runtime         = config["palm_annot"]["runtime"],
+            cpus_per_task   = config["palm_annot"]["threads"],
+            slurm_partition = config["palm_annot"]["partition"],
+            slurm_account   = config["palm_annot"]["account"],
+        params:
+            palm_annot_py = config["palm_annot"]["install_dir"] + "/py/palm_annot.py",
+            fev2tsv_py    = config["palm_annot"]["install_dir"] + "/py/fev2tsv.py",
+            seqtype       = config["palm_annot"]["seqtype"],
+            minscore      = config["palm_annot"]["minscore"],
+            minpssmscore  = config["palm_annot"]["minpssmscore"],
+            tmpdir        = config["palm_annot"]["tmpdir"] + "/lucaprot/ICTV",
+        log:
+            out = "log/03_RDRP_identification/lucaprot_palmscan/ICTV.palm_annot.log",
+            err = "log/03_RDRP_identification/lucaprot_palmscan/ICTV.palm_annot.err",
+        shell:
+            """
+            mkdir -p {params.tmpdir}
+            python {params.palm_annot_py} \
+                --input        {input.aa} \
+                --seqtype      {params.seqtype} \
+                --fev          {output.fev} \
+                --rdrp         {output.rdrp_aa} \
+                --minscore     {params.minscore} \
+                --minpssmscore {params.minpssmscore} \
+                --threads      {threads} \
+                --tmpdir       {params.tmpdir} \
+                > {log.out} 2> {log.err}
+            python {params.fev2tsv_py} \
+                --input  {output.fev} \
+                --output {output.tsv} \
+                --header yes \
+                >> {log.out} 2>> {log.err}
+            """
+
+    # Step 9g: merge RC + LP sources for ICTV (motif-confirmed, longest-per-contig)
+    rule merge_rdrp_results_ICTV:
+        input:
+            rdrpcatch         = _ICTV_RC_DIR + "/" + ICTV_STEM + "_rdrpcatch_output_annotated.tsv",
+            palmscan          = _ICTV_PS_DIR + "/ICTV_palmscan_hits.tsv",
+            lucaprot          = _ICTV_LP_DIR + "/RdRPs_only_using_threshold" + _LUCAPROT_ACTIVE_STR + ".csv",
+            lucaprot_palmscan = _ICTV_LP_DIR + "/ICTV_lucaprot_palmscan_hits.tsv",
+        output:
+            merged  = _ICTV_MERGE_DIR + "/ICTV_rdrp_merged.tsv",
+            regions = _ICTV_MERGE_DIR + "/ICTV_rdrp_regions.tsv",
+        conda:
+            "../envs/python.yaml"
+        threads: config["small_job"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = config["small_job"]["threads"],
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        params:
+            script = config["scripts"]["merge_rdrp_results"],
+        log:
+            out = "log/03_RDRP_identification/merge/ICTV.log",
+            err = "log/03_RDRP_identification/merge/ICTV.err",
+        shell:
+            """
+            mkdir -p {_ICTV_MERGE_DIR} log/03_RDRP_identification/merge
+            python {params.script} \
+                --rdrpcatch           {input.rdrpcatch} \
+                --palmscan            {input.palmscan} \
+                --lucaprot            {input.lucaprot} \
+                --lucaprot-palmscan   {input.lucaprot_palmscan} \
+                --output              {output.merged} \
+                --output-regions      {output.regions} \
+                > {log.out} 2> {log.err}
+            """
+
+    # Step 9g-post: write per-source contig list .txt files for ICTV
+    rule write_ictv_contig_lists:
+        input:
+            merged = _ICTV_MERGE_DIR + "/ICTV_rdrp_merged.tsv",
+        output:
+            expand(_ICTV_MERGE_DIR + "/{list_name}.txt", list_name=_SOURCE_LISTS),
+        conda:
+            "../envs/python.yaml"
+        threads: 1
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = 1,
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        params:
+            outdir = _ICTV_MERGE_DIR,
+            script = "scripts/03_RDRP_identification/write_ictv_contig_lists.py",
+        log:
+            out = "log/03_RDRP_identification/merge/ICTV_contig_lists.log",
+            err = "log/03_RDRP_identification/merge/ICTV_contig_lists.err",
+        shell:
+            """
+            mkdir -p {params.outdir} log/03_RDRP_identification/merge
+            python {params.script} \
+                --merged {input.merged} \
+                --outdir {params.outdir} \
+                > {log.out} 2> {log.err}
+            """
+
+    # Step 9h: write per-source protein ID lists for ICTV
+    rule write_protein_id_lists_ICTV:
+        input:
+            merged = _ICTV_MERGE_DIR + "/ICTV_rdrp_merged.tsv",
+        output:
+            expand(_ICTV_PROTEIN_DIR + "/{cat}_ids.txt", cat=["RdRpCATCH", "LucaProt"]),
+        conda:
+            "../envs/python.yaml"
+        threads: config["small_job"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = config["small_job"]["threads"],
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        params:
+            script = config["scripts"]["write_protein_id_lists"],
+            outdir = _ICTV_PROTEIN_DIR,
+        log:
+            out = "log/03_RDRP_identification/8_RdRp_protein/ICTV_write_ids.log",
+            err = "log/03_RDRP_identification/8_RdRp_protein/ICTV_write_ids.err",
+        shell:
+            """
+            mkdir -p {params.outdir} log/03_RDRP_identification/8_RdRp_protein
+            python {params.script} \
+                --merged {input.merged} \
+                --outdir {params.outdir} \
+                > {log.out} 2> {log.err}
+            """
+
+    # Step 9h-1: multi-region contig summary for ICTV (mirrors the RNA-sample rule)
+    rule summarize_multi_region_contigs_ICTV:
+        input:
+            regions = _ICTV_MERGE_DIR + "/ICTV_rdrp_regions.tsv",
+            merged  = _ICTV_MERGE_DIR + "/ICTV_rdrp_merged.tsv",
+        output:
+            _ICTV_MERGE_DIR + "/multi_region_contigs_summary.tsv",
+        conda:
+            "../envs/python.yaml"
+        threads: config["small_job"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = config["small_job"]["threads"],
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        log:
+            out = "log/03_RDRP_identification/merge/ICTV_multi_region_summary.log",
+            err = "log/03_RDRP_identification/merge/ICTV_multi_region_summary.err",
+        shell:
+            """
+            mkdir -p {_ICTV_MERGE_DIR} log/03_RDRP_identification/merge
+            python scripts/03_RDRP_identification/summarize_multi_region_contigs.py \
+                --regions {input.regions} \
+                --merged  {input.merged} \
+                --output  {output} \
+                > {log.out} 2> {log.err}
+            """
+
+    # Step 9h-2: human-readable index of the two final ICTV protein FASTAs
+    rule summarize_final_proteins_ICTV:
+        input:
+            merged = _ICTV_MERGE_DIR + "/ICTV_rdrp_merged.tsv",
+        output:
+            _ICTV_PROTEIN_DIR + "/final_proteins_summary.tsv",
+        conda:
+            "../envs/python.yaml"
+        threads: config["small_job"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = config["small_job"]["threads"],
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        log:
+            out = "log/03_RDRP_identification/8_RdRp_protein/ICTV_final_proteins_summary.log",
+            err = "log/03_RDRP_identification/8_RdRp_protein/ICTV_final_proteins_summary.err",
+        shell:
+            """
+            mkdir -p {_ICTV_PROTEIN_DIR} log/03_RDRP_identification/8_RdRp_protein
+            python scripts/03_RDRP_identification/summarize_final_proteins.py \
+                --merged {input.merged} \
+                --output {output} \
+                > {log.out} 2> {log.err}
+            """
+
+    # Step 9i: stage ICTV source FASTAs for protein extraction (single file, no cat needed)
+    _ICTV_PS_TRIMMED = _ICTV_PROTEIN_DIR + "/ICTV_ps_trimmed.faa"
+    _ICTV_LP_TRIMMED = _ICTV_PROTEIN_DIR + "/ICTV_lp_trimmed.faa"
+
+    _ICTV_PROTEIN_SOURCE_FASTA = {
+        "ps":  _ICTV_PS_TRIMMED,
+        "lpt": _ICTV_LP_TRIMMED,
+    }
+
+    rule cp_ictv_ps_trimmed:
+        input:  _ICTV_PS_DIR + "/ICTV_rdrp_trimmed.faa"
+        output: _ICTV_PS_TRIMMED
+        threads: 1
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = 1,
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        shell: "mkdir -p {_ICTV_PROTEIN_DIR} && cp {input} {output}"
+
+    rule cp_ictv_lp_trimmed:
+        input:  _ICTV_LP_DIR + "/ICTV_lucaprot_rdrp_trimmed.faa"
+        output: _ICTV_LP_TRIMMED
+        threads: 1
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = 1,
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        shell: "mkdir -p {_ICTV_PROTEIN_DIR} && cp {input} {output}"
+
+    # Step 9j: extract per-source ICTV protein FASTAs
+    rule extract_proteins_ICTV:
+        input:
+            fasta   = lambda wc: _ICTV_PROTEIN_SOURCE_FASTA[_PROTEIN_SOURCE_KEY[wc.pcat]],
+            id_list = _ICTV_PROTEIN_DIR + "/{pcat}_ids.txt",
+        output:
+            fasta = _ICTV_PROTEIN_DIR + "/{pcat}.faa",
+        wildcard_constraints:
+            pcat = "RdRpCATCH|LucaProt",
+        conda:
+            "../envs/seqkit-spade.yaml"
+        threads: config["small_job"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = config["small_job"]["threads"],
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        log:
+            err = "log/03_RDRP_identification/8_RdRp_protein/ICTV_{pcat}.err",
+        shell:
+            """
+            mkdir -p {_ICTV_PROTEIN_DIR} log/03_RDRP_identification/8_RdRp_protein
+            seqkit grep \
+                --pattern-file {input.id_list} \
+                --threads {threads} \
+                {input.fasta} \
+                > {output.fasta} \
+                2> {log.err}
+            """
+
+    # Step 9k: extract ICTV sequences per source (source: original ICTV fasta)
+    rule seqkit_extract_ictv:
+        input:
+            fasta   = config["ICTV"]["fasta"],
+            id_list = _ICTV_MERGE_DIR + "/{list_name}.txt",
+        output:
+            fasta = _ICTV_CONTIG_DIR + "/{list_name}.fasta",
+        wildcard_constraints:
+            list_name = "|".join(_SOURCE_LISTS),
+        conda:
+            "../envs/seqkit-spade.yaml"
+        threads: config["small_job"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = config["small_job"]["threads"],
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        log:
+            err = "log/03_RDRP_identification/ICTV_contig/{list_name}.err",
+        shell:
+            """
+            mkdir -p {_ICTV_CONTIG_DIR} log/03_RDRP_identification/ICTV_contig
+            seqkit grep \
+                --pattern-file {input.id_list} \
+                --threads {threads} \
+                {input.fasta} \
+                > {output.fasta} \
+                2> {log.err}
+            """
+
+    rule extract_palm_regions_ICTV:
+        input:
+            rdrpcatch_motif = _ICTV_PROTEIN_DIR + "/RdRpCATCH.faa",
+            lucaprot_motif  = _ICTV_PROTEIN_DIR + "/LucaProt.faa",
+            rdrpcatch_seqs  = _ICTV_RC_DIR + "/" + ICTV_STEM + "_rdrpcatch_fasta/" + ICTV_STEM + "_trimmed_aminoacid_sequences.fasta",
+            lucaprot_seqs   = _ICTV_ORF_DIR + "/ICTV_orfs.faa",
+            script          = "scripts/03_RDRP_identification/extract_palm_regions.py",
+        output:
+            rc_tsv = _ICTV_PALM_DIR + "/RdRpCATCH/palm_regions.tsv",
+            lp_tsv = _ICTV_PALM_DIR + "/LucaProt/palm_regions.tsv",
+        params:
+            outdir         = _ICTV_PALM_DIR,
+            rdrpcatch_glob = _ICTV_RC_DIR + "/**/*_trimmed_aminoacid_sequences.fasta",
+            lucaprot_glob  = _ICTV_ORF_DIR + "/ICTV_orfs.faa",
+            flank          = 150,
+        log:
+            out = "log/03_RDRP_identification/ICTV/8b_palm_extracted/extract_palm_regions.log",
+            err = "log/03_RDRP_identification/ICTV/8b_palm_extracted/extract_palm_regions.err",
+        conda:
+            "../envs/python.yaml"
+        threads: config["small_job"]["threads"]
+        resources:
+            mem_mb_per_cpu  = config["small_job"]["memory"],
+            runtime         = config["small_job"]["runtime"],
+            cpus_per_task   = config["small_job"]["threads"],
+            slurm_partition = config["small_job"]["partition"],
+            slurm_account   = config["small_job"]["account"],
+        shell:
+            """
+            mkdir -p {params.outdir} log/03_RDRP_identification/ICTV/8b_palm_extracted
+            python {input.script} \
+                --rdrpcatch-motif {input.rdrpcatch_motif} \
+                --rdrpcatch-seqs  "{params.rdrpcatch_glob}" \
+                --lucaprot-motif  {input.lucaprot_motif} \
+                --lucaprot-seqs   "{params.lucaprot_glob}" \
+                --outdir          {params.outdir} \
+                --flank           {params.flank} \
+                > {log.out} 2> {log.err}
+            """
+
+
+# ── Step 10: Collect final outputs ───────────────────────────────────────────
+
+rule make_final_output:
+    input:
+        rc_confirmed    = _NR_DIR + "/RdRpCATCH_viral_confirmed.faa",
+        lp_confirmed    = _NR_DIR + "/LucaProt_viral_confirmed.faa",
+        merged          = _MERGE_DIR + "/all_samples_rdrp_merged.tsv",
+        contigs         = _CONTIG_DIR + "/any_rdrp.fasta",
+        rc_full         = _PALM_DIR + "/RdRpCATCH/rdrp_full.faa",
+        lp_full         = _PALM_DIR + "/LucaProt/rdrp_full.faa",
+        rc_core         = _PALM_DIR + "/RdRpCATCH/palm_core.faa",
+        lp_core         = _PALM_DIR + "/LucaProt/palm_core.faa",
+        rc_extended     = _PALM_DIR + "/RdRpCATCH/palm_extended.faa",
+        lp_extended     = _PALM_DIR + "/LucaProt/palm_extended.faa",
+        rc_palm_tsv     = _PALM_DIR + "/RdRpCATCH/palm_regions.tsv",
+        lp_palm_tsv     = _PALM_DIR + "/LucaProt/palm_regions.tsv",
+    output:
+        merged          = _FINAL_DIR + "/final_rdrp_merged.tsv",
+        contigs         = _FINAL_DIR + "/final_contigs.fasta",
+        # all/ subdir sentinels
+        all_rc_full     = _FINAL_DIR + "/all/RdRpCATCH_full.faa",
+        all_lp_full     = _FINAL_DIR + "/all/LucaProt_full.faa",
+        # nr_filtered/ subdir sentinels
+        nr_rc_faa       = _FINAL_DIR + "/nr_filtered/RdRpCATCH.faa",
+        nr_lp_faa       = _FINAL_DIR + "/nr_filtered/LucaProt.faa",
+        nr_rc_full      = _FINAL_DIR + "/nr_filtered/RdRpCATCH_full.faa",
+        nr_lp_full      = _FINAL_DIR + "/nr_filtered/LucaProt_full.faa",
+        # combined outputs
+        all_combined_full     = _FINAL_DIR + "/all/combined_full.faa",
+        all_combined_core     = _FINAL_DIR + "/all/combined_palm_core.faa",
+        all_combined_extended = _FINAL_DIR + "/all/combined_palm_extended.faa",
+        all_combined_tsv      = _FINAL_DIR + "/all/combined_palm_regions.tsv",
+        nr_combined           = _FINAL_DIR + "/nr_filtered/combined.faa",
+        nr_combined_full      = _FINAL_DIR + "/nr_filtered/combined_full.faa",
+        nr_combined_core      = _FINAL_DIR + "/nr_filtered/combined_palm_core.faa",
+        nr_combined_extended  = _FINAL_DIR + "/nr_filtered/combined_palm_extended.faa",
+        nr_combined_tsv       = _FINAL_DIR + "/nr_filtered/combined_palm_regions.tsv",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/10_final/make_final_output.log",
+        err = "log/03_RDRP_identification/10_final/make_final_output.err",
+    shell:
+        """
+        mkdir -p {_FINAL_DIR}/all {_FINAL_DIR}/nr_filtered \
+                 log/03_RDRP_identification/10_final
+        python scripts/03_RDRP_identification/make_final_output.py \
+            --rc-confirmed  {input.rc_confirmed} \
+            --lp-confirmed  {input.lp_confirmed} \
+            --rc-full       {input.rc_full} \
+            --lp-full       {input.lp_full} \
+            --rc-core       {input.rc_core} \
+            --lp-core       {input.lp_core} \
+            --rc-extended   {input.rc_extended} \
+            --lp-extended   {input.lp_extended} \
+            --rc-palm-tsv   {input.rc_palm_tsv} \
+            --lp-palm-tsv   {input.lp_palm_tsv} \
+            --merged        {input.merged} \
+            --contigs       {input.contigs} \
+            --outdir        {_FINAL_DIR} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 11: RdRpCATCH taxonomy annotation on combined nr_filtered proteins ───
+# Superseded by the DIAMOND blastp-vs-RVMT taxonomy rules below. Kept
+# commented out for reference/rollback.
+#
+# rule rdrpcatch_taxonomy:
+#     input:
+#         faa = lambda wc: _RDRPCATCH_TAX_QUERIES[wc.query],
+#     output:
+#         tsv = _TAXDIR + "/{query}/{query}_rdrpcatch_output_annotated.tsv",
+#     params:
+#         outdir     = _TAXDIR + "/{query}",
+#         db_dir     = config["rdrp_catch"]["db_dir"],
+#         db_options = config["rdrp_catch"]["tax_db_options"],
+#     log:
+#         out = "log/03_RDRP_identification/11_taxonomic_assignment/{query}.log",
+#         err = "log/03_RDRP_identification/11_taxonomic_assignment/{query}.err",
+#     conda:
+#         "../envs/rdrp_catch.yaml"
+#     threads: config["rdrp_catch"]["threads"]
+#     resources:
+#         mem_mb_per_cpu  = config["regular_memory"],
+#         runtime         = config["rdrp_catch"]["runtime"],
+#         cpus_per_task   = config["rdrp_catch"]["threads"],
+#         slurm_partition = config["regular_partition"],
+#         slurm_account   = config["account"],
+#     shell:
+#         """
+#         mkdir -p {params.outdir} log/03_RDRP_identification/11_taxonomic_assignment
+#         rdrpcatch scan \
+#             --input      {input.faa} \
+#             --output     {params.outdir} \
+#             --cpus       {threads} \
+#             --seq-type   prot \
+#             --db-dir     {params.db_dir} \
+#             --db-options {params.db_options} \
+#             --extended-output \
+#             --overwrite \
+#             --keep-tmp \
+#             > {log.out} 2> {log.err}
+#         mv {params.outdir}/*_rdrpcatch_output_annotated.tsv {output.tsv} 2>> {log.err}
+#         """
+
+
+# ── Step 11: DIAMOND blastp taxonomy annotation vs. RVMT RCR90 RdRp set ───────
+# Top --max-target-seqs hits per query (ranked by bitscore) are all kept so a
+# curator can fall back to a lower-ranked hit when the top one lacks a usable
+# taxonomy label. Only an e-value cutoff is applied at search time; query
+# coverage is not filtered because the RVMT reference is domain-core-trimmed
+# while queries here are full-length proteins, so qcov is expected to be low
+# for genuine hits. pident/qcovhsp/scovhsp are reported for manual review.
+
+rule build_rvmt_diamond_db:
+    # RCR90 RdRp reference set (domain-core-trimmed, de-permuted, de-frameshifted,
+    # ungapped) used for DIAMOND blastp-based taxonomy assignment below.
+    input:
+        rvmt_dir = config["RVMT"]["dir"],
+        fasta    = config["rvmt_diamond_tax"]["rdrp_fasta"],
+    output:
+        dmnd = config["rvmt_diamond_tax"]["dmnd_db"],
+    log:
+        out = "log/03_RDRP_identification/11_taxonomic_assignment/build_rvmt_diamond_db.log",
+        err = "log/03_RDRP_identification/11_taxonomic_assignment/build_rvmt_diamond_db.err",
+    conda:
+        "../envs/diamond.yaml"
+    threads: config["rvmt_diamond_tax"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["rvmt_diamond_tax"]["memory"],
+        runtime         = config["rvmt_diamond_tax"]["runtime"],
+        cpus_per_task   = config["rvmt_diamond_tax"]["threads"],
+        slurm_partition = config["rvmt_diamond_tax"]["partition"],
+        slurm_account   = config["rvmt_diamond_tax"]["account"],
+    shell:
+        """
+        mkdir -p log/03_RDRP_identification/11_taxonomic_assignment
+        diamond makedb --in {input.fasta} -d {output.dmnd} -p {threads} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule rvmt_diamond_blastp:
+    input:
+        faa = lambda wc: _RDRPCATCH_TAX_QUERIES[wc.query],
+        db  = config["rvmt_diamond_tax"]["dmnd_db"],
+    output:
+        tsv = _TAXDIR + "/{query}/{query}_diamond_rvmt_tophits.tsv",
+    params:
+        evalue          = config["rvmt_diamond_tax"]["evalue"],
+        max_target_seqs = config["rvmt_diamond_tax"]["max_target_seqs"],
+    log:
+        out = "log/03_RDRP_identification/11_taxonomic_assignment/{query}_diamond.log",
+        err = "log/03_RDRP_identification/11_taxonomic_assignment/{query}_diamond.err",
+    conda:
+        "../envs/diamond.yaml"
+    threads: config["rvmt_diamond_tax"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["rvmt_diamond_tax"]["memory"],
+        runtime         = config["rvmt_diamond_tax"]["runtime"],
+        cpus_per_task   = config["rvmt_diamond_tax"]["threads"],
+        slurm_partition = config["rvmt_diamond_tax"]["partition"],
+        slurm_account   = config["rvmt_diamond_tax"]["account"],
+    shell:
+        """
+        mkdir -p {_TAXDIR}/{wildcards.query} log/03_RDRP_identification/11_taxonomic_assignment
+        diamond blastp \
+            -q {input.faa} \
+            --db {input.db} \
+            -p {threads} \
+            -k {params.max_target_seqs} \
+            --evalue {params.evalue} \
+            --outfmt 6 qseqid sseqid pident length evalue bitscore qcovhsp scovhsp \
+            -o {output.tsv} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule rvmt_diamond_taxonomy:
+    input:
+        diamond  = _TAXDIR + "/{query}/{query}_diamond_rvmt_tophits.tsv",
+        info_tsv = config["rvmt_diamond_tax"]["info_tsv"],
+    output:
+        tsv = _TAXDIR + "/{query}/{query}_diamond_rvmt_annotated.tsv",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/11_taxonomic_assignment/{query}_annotate.log",
+        err = "log/03_RDRP_identification/11_taxonomic_assignment/{query}_annotate.err",
+    shell:
+        """
+        mkdir -p {_TAXDIR}/{wildcards.query} log/03_RDRP_identification/11_taxonomic_assignment
+        python scripts/03_RDRP_identification/annotate_rvmt_taxonomy.py \
+            --diamond  {input.diamond} \
+            --info-tsv {input.info_tsv} \
+            --output   {output.tsv} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 20: CD-HIT clustering of final RdRp proteins at 90% AAI ─────────────
+# Clustering is run once on the full-length proteins. The resulting cluster
+# representative IDs are then used to pull the matching sequences out of the
+# palm_core / palm_extended combined fastas (same seq_id / header across all
+# three nr_filtered/combined_* files — see extract_palm_regions.py), so all
+# three sets stay in sync with a single clustering pass.
+
+rule cluster_rdrp_proteins:
+    input:
+        faa = _FINAL_DIR + "/nr_filtered/combined_full.faa",
+    output:
+        faa = _CLUSTER_DIR + "/combined_full_c90.faa",
+        clstr = _CLUSTER_DIR + "/combined_full_c90.faa.clstr",
+    params:
+        aai_threshold = config["cdhit"]["aai_threshold"],
+    log:
+        out = "log/03_RDRP_identification/20_cluster/cluster_rdrp_proteins.log",
+        err = "log/03_RDRP_identification/20_cluster/cluster_rdrp_proteins.err",
+    conda:
+        "../envs/cdhit.yaml"
+    threads: config["cdhit"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["cdhit"]["memory"],
+        runtime         = config["cdhit"]["runtime"],
+        cpus_per_task   = config["cdhit"]["threads"],
+        slurm_partition = config["cdhit"]["partition"],
+        slurm_account   = config["cdhit"]["account"],
+    shell:
+        """
+        mkdir -p {_CLUSTER_DIR} log/03_RDRP_identification/20_cluster
+        cd-hit -i {input.faa} \
+            -o {output.faa} \
+            -c {params.aai_threshold} \
+            -n 5 \
+            -M {resources.mem_mb_per_cpu} \
+            -T {threads} \
+            -d 0 \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule cluster_rdrp_proteins_palm:
+    input:
+        full_c90 = _CLUSTER_DIR + "/combined_full_c90.faa",
+        faa      = _FINAL_DIR + "/nr_filtered/combined_{palmset}.faa",
+    output:
+        faa = _CLUSTER_DIR + "/combined_{palmset}_c90.faa",
+    wildcard_constraints:
+        palmset = "palm_core|palm_extended",
+    log:
+        out = "log/03_RDRP_identification/20_cluster/cluster_rdrp_proteins_{palmset}.log",
+        err = "log/03_RDRP_identification/20_cluster/cluster_rdrp_proteins_{palmset}.err",
+    conda:
+        "../envs/seqkit-spade.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        """
+        mkdir -p {_CLUSTER_DIR} log/03_RDRP_identification/20_cluster
+        grep '^>' {input.full_c90} | sed 's/^>//; s/ .*//' \
+            > {_CLUSTER_DIR}/{wildcards.palmset}_c90_ids.txt
+        seqkit grep -f {_CLUSTER_DIR}/{wildcards.palmset}_c90_ids.txt \
+            {input.faa} -o {output.faa} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 21: DIAMOND blastp taxonomy annotation on the c90-clustered sets ────
+# Same method as Step 11, run on the CD-HIT cluster representatives (Step 20)
+# instead of the full nr_filtered sets. Run ONLY on full_length -- palm_core
+# and palm_extended are shorter, differently-trimmed regions of the exact
+# same underlying proteins (same seq_id/header, see extract_palm_regions.py),
+# so searching them separately could give a given protein a different top
+# hit / Phylum call depending on which region was searched. Instead Step 22
+# reuses full_length's Phylum call for all three sets, so a protein always
+# lands in one consistent Phylum bin regardless of which region is being
+# extracted.
+
+rule rvmt_diamond_blastp_cluster:
+    input:
+        faa = _CLUSTER_TAX_QUERIES["full_length"],
+        db  = config["rvmt_diamond_tax"]["dmnd_db"],
+    output:
+        tsv = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophits.tsv",
+    params:
+        evalue          = config["rvmt_diamond_tax"]["evalue"],
+        max_target_seqs = config["rvmt_diamond_tax"]["max_target_seqs"],
+    log:
+        out = "log/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length_diamond.log",
+        err = "log/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length_diamond.err",
+    conda:
+        "../envs/diamond.yaml"
+    threads: config["rvmt_diamond_tax"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["rvmt_diamond_tax"]["memory"],
+        runtime         = config["rvmt_diamond_tax"]["runtime"],
+        cpus_per_task   = config["rvmt_diamond_tax"]["threads"],
+        slurm_partition = config["rvmt_diamond_tax"]["partition"],
+        slurm_account   = config["rvmt_diamond_tax"]["account"],
+    shell:
+        """
+        mkdir -p {_TAXDIR21}/full_length log/03_RDRP_identification/21_taxonomic_assignment_cluster
+        diamond blastp \
+            -q {input.faa} \
+            --db {input.db} \
+            -p {threads} \
+            -k {params.max_target_seqs} \
+            --evalue {params.evalue} \
+            --outfmt 6 qseqid sseqid pident length evalue bitscore qcovhsp scovhsp \
+            -o {output.tsv} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule rvmt_diamond_taxonomy_cluster:
+    input:
+        diamond  = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophits.tsv",
+        info_tsv = config["rvmt_diamond_tax"]["info_tsv"],
+    output:
+        tsv = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_annotated.tsv",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length_annotate.log",
+        err = "log/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length_annotate.err",
+    shell:
+        """
+        mkdir -p {_TAXDIR21}/full_length log/03_RDRP_identification/21_taxonomic_assignment_cluster
+        python scripts/03_RDRP_identification/annotate_rvmt_taxonomy.py \
+            --diamond  {input.diamond} \
+            --info-tsv {input.info_tsv} \
+            --output   {output.tsv} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# Top-hit-only (hit_rank == 1) subset of the full_length annotated TSV --
+# same columns, no changes, just one row per query.
+rule rvmt_diamond_taxonomy_cluster_tophit:
+    input:
+        tsv = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_annotated.tsv",
+    output:
+        tsv = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophit.tsv",
+    log:
+        err = "log/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length_tophit.err",
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        """
+        mkdir -p {_TAXDIR21}/full_length log/03_RDRP_identification/21_taxonomic_assignment_cluster
+        awk -F'\\t' 'NR==1 {{
+            for (i=1; i<=NF; i++) if ($i == "hit_rank") col=i
+            print; next
+        }} $col == 1' {input.tsv} > {output.tsv} 2> {log.err}
+        """
+
+
+# ── Step 22: split c90-clustered proteins into per-Phylum FASTA files ────────
+# Uses the top DIAMOND-vs-RVMT hit (hit_rank == 1) from Step 21's full_length
+# search to assign each sequence to a Phylum bin. Sequences with no
+# significant hit, or a blank Phylum call, land in Unclassified.faa.
+#
+# palm_core / palm_extended are NOT searched independently (see Step 21 note)
+# -- they reuse full_length's Phylum assignment for the same seq_id, then
+# just extract that region's sequence into the matching Phylum file. This
+# keeps a given protein in the same Phylum bin across all three sets.
+
+rule split_by_phylum:
+    input:
+        fasta      = _CLUSTER_TAX_QUERIES["full_length"],
+        annotated  = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophit.tsv",
+        rvmt_fasta = config["rvmt_diamond_tax"]["rdrp_fasta"],
+    output:
+        outdir = directory(_PHYLUM_DIR + "/full_length_phylum"),
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/22_phylum_cluster/full_length_phylum.log",
+        err = "log/03_RDRP_identification/22_phylum_cluster/full_length_phylum.err",
+    shell:
+        """
+        mkdir -p {output.outdir} log/03_RDRP_identification/22_phylum_cluster
+        python scripts/03_RDRP_identification/split_fasta_by_phylum.py \
+            --fasta      {input.fasta} \
+            --annotated  {input.annotated} \
+            --outdir     {output.outdir} \
+            --rvmt-fasta {input.rvmt_fasta} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule split_by_phylum_palm:
+    input:
+        fasta     = lambda wc: _CLUSTER_TAX_QUERIES[wc.palmset],
+        annotated = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophit.tsv",
+    output:
+        outdir = directory(_PHYLUM_DIR + "/{palmset}_phylum"),
+    wildcard_constraints:
+        palmset = "palm_core|palm_extended",
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/22_phylum_cluster/{palmset}_phylum.log",
+        err = "log/03_RDRP_identification/22_phylum_cluster/{palmset}_phylum.err",
+    shell:
+        """
+        mkdir -p {output.outdir} log/03_RDRP_identification/22_phylum_cluster
+        python scripts/03_RDRP_identification/split_fasta_by_phylum.py \
+            --fasta     {input.fasta} \
+            --annotated {input.annotated} \
+            --outdir    {output.outdir} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 22b: same as Step 22, but split by Class / Order / Family instead ───
+# of Phylum. Same reasoning as split_by_phylum / split_by_phylum_palm above:
+# full_length is classified directly; palm_core / palm_extended reuse
+# full_length's assignment at the same rank for the same seq_id.
+
+rule split_by_rank:
+    input:
+        fasta      = _CLUSTER_TAX_QUERIES["full_length"],
+        annotated  = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophit.tsv",
+        rvmt_fasta = config["rvmt_diamond_tax"]["rdrp_fasta"],
+    output:
+        outdir = directory(_PHYLUM_DIR + "/full_length_{rank}"),
+    wildcard_constraints:
+        rank = "class|order|family",
+    params:
+        rank_col = lambda wc: wc.rank.capitalize(),
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/22_phylum_cluster/full_length_{rank}.log",
+        err = "log/03_RDRP_identification/22_phylum_cluster/full_length_{rank}.err",
+    shell:
+        """
+        mkdir -p {output.outdir} log/03_RDRP_identification/22_phylum_cluster
+        python scripts/03_RDRP_identification/split_fasta_by_phylum.py \
+            --fasta      {input.fasta} \
+            --annotated  {input.annotated} \
+            --outdir     {output.outdir} \
+            --rank       {params.rank_col} \
+            --rvmt-fasta {input.rvmt_fasta} \
+            > {log.out} 2> {log.err}
+        """
+
+
+rule split_by_rank_palm:
+    input:
+        fasta     = lambda wc: _CLUSTER_TAX_QUERIES[wc.palmset],
+        annotated = _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophit.tsv",
+    output:
+        outdir = directory(_PHYLUM_DIR + "/{palmset}_{rank}"),
+    wildcard_constraints:
+        palmset = "palm_core|palm_extended",
+        rank    = "class|order|family",
+    params:
+        rank_col = lambda wc: wc.rank.capitalize(),
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    log:
+        out = "log/03_RDRP_identification/22_phylum_cluster/{palmset}_{rank}.log",
+        err = "log/03_RDRP_identification/22_phylum_cluster/{palmset}_{rank}.err",
+    shell:
+        """
+        mkdir -p {output.outdir} log/03_RDRP_identification/22_phylum_cluster
+        python scripts/03_RDRP_identification/split_fasta_by_phylum.py \
+            --fasta     {input.fasta} \
+            --annotated {input.annotated} \
+            --outdir    {output.outdir} \
+            --rank      {params.rank_col} \
+            > {log.out} 2> {log.err}
+        """

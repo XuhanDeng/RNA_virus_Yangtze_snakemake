@@ -1,0 +1,6 @@
+name: trimal
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - bioconda::trimal=1.4.1
