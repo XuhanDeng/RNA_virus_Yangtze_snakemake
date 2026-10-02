@@ -32,7 +32,7 @@ _ESV_RC_FAA        = _ESV_PROTEIN_DIR + "/RdRpCATCH.faa"
 _ESV_LP_FAA        = _ESV_PROTEIN_DIR + "/LucaProt.faa"
 
 # Clustered contig table produced by workflow 99
-_RNA_VIRUS_TABLE   = "result/99_tables/3_RNA_virus_table/rna_virus_contig_table.tsv"
+_RNA_VIRUS_TABLE   = "result/99_tables/4_contig_tag_abundance/rna_virus_contig_table.tsv"
 _RDRP_MERGED_TSV   = _FINAL_DIR + "/final_rdrp_merged.tsv"
 _ESVIRTU_INFO_TSV  = "result/99_tables/2_esvirtu_table/esvirtu_info_table.tsv"
 _SPEARMAN_DIR      = "result/99_tables/6_Recalculated_correlation/1_RNA_virus_Recalculated_correlation_TPM/2_spearman_analysis"

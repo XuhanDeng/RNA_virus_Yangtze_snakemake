@@ -463,11 +463,29 @@ alphafold3:
   threads: 8
   runtime: 720          # minutes (12 hours) -- genetic search + inference
   memory: 8000           # MB per CPU
-  partition: "gpu"       # use gpu-a100/gpu-h100 -- AF3 requires Compute Capability 8.0+
+  # DelftBlue's GPU partitions are named gpu-v100 / gpu-a100 (not a generic
+  # "gpu"). AF3 requires Compute Capability >=8.0 -- gpu-v100 nodes (Tesla
+  # V100S, CC 7.0) are too old and will fail; only gpu-a100 (Tesla A100 80GB,
+  # CC 8.0) works.
+  partition: "gpu-a100"
   account: "research-ceg-wm"
   gpu_id: 0
   gpu_devices: "0"
   gpus: 1
+  # Sequences per batch job (data-pipeline and inference are both grouped
+  # this way via --input_dir) -- fewer per batch means more, shorter SLURM
+  # jobs; more per batch means fewer, longer ones.
+  batch_size: 25
+  # CPU-only genetic/template search (--run_data_pipeline, --norun_inference).
+  # This is the slow, memory-heavy stage (jackhmmer against UniRef90/UniProt/
+  # MGnify/BFD in parallel) but needs no GPU -- run on regular compute nodes,
+  # freeing gpu-a100 allocation for the fast inference-only stage below.
+  data_pipeline:
+    threads: 3             # CPUs per data-pipeline batch job (jackhmmer/nhmmer/hmmsearch n_cpu)
+    runtime: 7200          # minutes (5 days) -- can be slow for some queries
+    memory: 3968            # MB per CPU
+    partition: "compute-p1"
+    account: "research-ceg-wm"
 
 # ESvirtu LucaProt/RdRP block temporarily removed from workflow 03.
 # Config kept here (commented) for easy re-enabling later.
@@ -975,6 +993,31 @@ coabundance_figure:
   tpm: "result/99_tables/5_Recalculated_RPKM_result/rna_virus_recalc_tpm.tsv"
   kk_dir: "result/99_tables/6_Recalculated_correlation/1_RNA_virus_Recalculated_correlation_TPM/2_spearman_analysis/known_known_pair"
   ku_dir: "result/99_tables/6_Recalculated_correlation/1_RNA_virus_Recalculated_correlation_TPM/2_spearman_analysis/known_unknown_pair"
+
+# Pie chart of RdRp cluster-representative RVMT taxonomy (one figure per rank),
+# from result/99_tables/3_RDRP_Summary/nr_filtered_protein_contig_cluster.tsv,
+# restricted to is_cluster_representative == True rows.
+rdrp_taxonomy_pie:
+  run: true
+  ranks:
+    - Phylum
+    - Class
+    - Order
+
+# Stacked bar plot of per-sample RNA-virus TPM abundance, one figure per
+# unified taxonomic level, from
+# result/99_tables/5_Recalculated_RPKM_result/1_taxonmy/rna_virus_recalc_tpm.annotated.tsv.
+# NA-taxonomy rows are grouped into an "Unknown" segment; taxa beyond top_n
+# (by total TPM) are collapsed into "Other".
+rna_virus_taxonomy_stack:
+  run: true
+  levels:
+    - phylum
+    - class
+    - order
+    - family
+    - genus
+  top_n: 12
 
 # ============================================================
 # 100_figure: compute resources (shared by all figure rules)

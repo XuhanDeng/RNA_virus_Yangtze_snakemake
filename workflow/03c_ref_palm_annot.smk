@@ -40,6 +40,9 @@ _REF_TAXA = {
 }
 
 
+_COMBINED_DIR = "result/03c_ref_palm_annot/3_combined"
+
+
 rule all:
     input:
         [
@@ -52,6 +55,7 @@ rule all:
             for rank in _RANKS
             for taxon in _REF_TAXA[rank]
         ],
+        _COMBINED_DIR + "/combined_full.faa",
 
 
 # ── Step 00: stage a self-contained snapshot of the per-taxon ref fastas ─────
@@ -176,4 +180,35 @@ rule extract_ref_palm_regions:
             > {log.out} 2> {log.err}
         mv {params.rc_subdir}/* {params.outdir}/
         rmdir {params.rc_subdir}
+        """
+
+
+# ── Step 3: combine Phylum-level top-hit RVMT references into one FASTA ──────
+# Concatenates the full-length (rdrp_full.faa) region-extracted RVMT
+# reference sequences across all Phylum-level taxa into a single file --
+# the RVMT reference subset actually relevant to this dataset (queries'
+# DIAMOND top hits only, not the full ~77K-sequence RVMT database). Used by
+# workflow/09_RDRP_strcture.smk as one of its 3 AlphaFold3 input sources.
+
+rule combine_ref_full_length:
+    input:
+        lambda wc: [
+            _RDRPREGION_DIR + f"/phylum/{taxon}/rdrp_full.faa"
+            for taxon in _REF_TAXA["phylum"]
+        ],
+    output:
+        combined = _COMBINED_DIR + "/combined_full.faa",
+    log:
+        err = "log/03c_ref_palm_annot/3_combined/combine_ref_full_length.err",
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        """
+        mkdir -p $(dirname {output.combined}) $(dirname {log.err})
+        cat {input} > {output.combined} 2> {log.err}
         """

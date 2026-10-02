@@ -1,15 +1,18 @@
 # Summary table generation workflow
 # Collects key outputs from upstream workflows and produces final publication tables.
 # Run after all upstream workflows are complete.
+#
+# Trimmed down from the original 99_tables.smk (full version backed up at
+# 99_tables.smk.bak) -- RNA virus contig table, recalculated RPKM/correlation,
+# read stats, and SparCC all removed for now. Bait recovery is being
+# abandoned, and the RdRp-based recalculation will be rebuilt separately with
+# its own spec later.
 
 configfile: "config/config.yaml"
 
 # ── Input → output mapping ────────────────────────────────────────────────────
 
 _TABLES = {
-    # RdRp identification
-    "03_RDRP_identification/all_samples_rdrp_merged.tsv":
-        "result/03_RDRP_identification/10_final/final_rdrp_merged.tsv",
     # ESvirtu abundance
     "04_modified_esvirtue_ribodetector/esvirtu_read_count.tsv":
         "result/04_modified_esvirtue_ribodetector/es/Merge/all_samples.detected_virus.assembly_summary.read_count.tsv",
@@ -29,35 +32,61 @@ _TABLES = {
     # Other virus identification (GeNomad + ICTV VMR annotation)
     "08_other_virus_identification/all_samples_virus_filter_summary.annotated.tsv":
         "result/08_other_virus_identification/2_virus_filter_summary/all_samples_virus_filter_summary.annotated.tsv",
-    # Bait recovery
-    "06_contig_bait/bait_recovered.txt":
-        "result/06_contig_bait/5_bait_contigs/bait_recovered.txt",
-    "06_contig_bait/bait_target_map.tsv":
-        "result/06_contig_bait/4_filtered_hits/bait_target_map.tsv",
+    # RVMT DIAMOND taxonomy on the CD-HIT cluster representatives (Step 21) --
+    # destination mirrors the source path exactly (21_taxonomic_assignment_cluster/full_length/)
+    "03_RDRP_identification/21_taxonomic_assignment_cluster/full_length/full_length_diamond_rvmt_annotated.tsv":
+        "result/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length/full_length_diamond_rvmt_annotated.tsv",
+    "03_RDRP_identification/21_taxonomic_assignment_cluster/full_length/full_length_diamond_rvmt_tophit.tsv":
+        "result/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length/full_length_diamond_rvmt_tophit.tsv",
+    # Final protein summary (Step 8)
+    "03_RDRP_identification/8_RdRp_protein/final_proteins_summary.tsv":
+        "result/03_RDRP_identification/8_RdRp_protein/final_proteins_summary.tsv",
+    # CD-HIT cluster membership file (Step 20) -- note: the actual result dir
+    # is 10_final/nr_filtered_cluster/, not 20_cluster/ (20_cluster only
+    # appears as a log path in 03_RDRP_identification.smk).
+    "03_RDRP_identification/10_final/nr_filtered_cluster/combined_full_c90.faa.clstr":
+        "result/03_RDRP_identification/10_final/nr_filtered_cluster/combined_full_c90.faa.clstr",
+    # Final NR-confirmed per-contig RdRp identification table (Step 10) -- one
+    # row per contig, source (RdRpCATCH/LucaProt), motif region coords, etc.
+    "03_RDRP_identification/10_final/final_rdrp_merged.tsv":
+        "result/03_RDRP_identification/10_final/final_rdrp_merged.tsv",
 }
 
 _OUTDIR  = "result/99_tables/01_cp_table"
 _LOG_DIR = "log/99_tables"
 
 _ESVIRTU_INFO_TABLE = "result/99_tables/2_esvirtu_table/esvirtu_info_table.tsv"
-_RNA_VIRUS_TABLE    = "result/99_tables/3_RNA_virus_table/rna_virus_contig_table.tsv"
-_RECALC_RPKMF       = "result/99_tables/5_Recalculated_RPKM_result/rna_virus_recalc_rpkmf.tsv"
-_RECALC_COUNT       = "result/99_tables/5_Recalculated_RPKM_result/rna_virus_recalc_read_count.tsv"
-_RECALC_TPM         = "result/99_tables/5_Recalculated_RPKM_result/rna_virus_recalc_tpm.tsv"
+_RNA_VIRUS_TABLE    = "result/99_tables/4_contig_tag_abundance/rna_virus_contig_table.tsv"
 
-_CORR_OUTDIR     = "result/99_tables/6_Recalculated_correlation/1_RNA_virus_Recalculated_correlation"
-_CORR_OUTDIR_TPM = "result/99_tables/6_Recalculated_correlation/1_RNA_virus_Recalculated_correlation_TPM"
-_CORR_THRESHOLDS = ["0.6", "0.7", "0.8", "0.9"]
-_CORR_PAIR_TYPES = ["known_known_pair", "known_unknown_pair"]
+# ── Recalculated RNA-virus-only abundance (esvirtu ssRNA/dsRNA rows +
+# RdRpCATCH/LucaProt contig rows) ──────────────────────────────────────────────
+_RECALC_OUTDIR = "result/99_tables/5_Recalculated_RPKM_result/0_RDRP_Esvirtue"
+_RECALC_COUNT  = _RECALC_OUTDIR + "/rna_virus_recalc_read_count.tsv"
+_RECALC_RPKMF  = _RECALC_OUTDIR + "/rna_virus_recalc_rpkmf.tsv"
+_RECALC_TPM    = _RECALC_OUTDIR + "/rna_virus_recalc_tpm.tsv"
 
-_SPARCC_OUTDIR = "result/99_tables/6_Recalculated_correlation/3_sparcc"
-_RUN_SPARCC   = config.get("fastspar", {}).get("run", False)
+# ── RVMT taxonomy annotation of the recalculated tables (contig rows only;
+# esvirtu rows keep their own pre-existing taxonomy, untouched) ───────────────
+_TAXONOMY_OUTDIR = "result/99_tables/5_Recalculated_RPKM_result/1_taxonmy"
+_TAX_COUNT = _TAXONOMY_OUTDIR + "/rna_virus_recalc_read_count.annotated.tsv"
+_TAX_RPKMF = _TAXONOMY_OUTDIR + "/rna_virus_recalc_rpkmf.annotated.tsv"
+_TAX_TPM   = _TAXONOMY_OUTDIR + "/rna_virus_recalc_tpm.annotated.tsv"
 
-_READ_STATS_OUTDIR  = "result/99_tables/7_read_stats"
-_READ_STATS_TABLE   = _READ_STATS_OUTDIR + "/sample_read_stats.tsv"
-_FASTP_DIR          = config["rna_fastp_dir"]
-_RIBODETECTOR_DIR   = config["ribodetector_dir"]
-_SAMPLES            = config["rna_samples"]
+# ── Per-sequence length/GC stats for the 03_RDRP_identification 10_final
+# all/nr_filtered/nr_filtered_cluster contig + protein outputs ────────────────
+_RDRP_STAGE_FASTA = {
+    ("all",                "rdrp_contigs"): "result/03_RDRP_identification/10_final/all/all_rdrp_contigs.fasta",
+    ("all",                "combined_full"): "result/03_RDRP_identification/10_final/all/combined_full.faa",
+    ("nr_filtered",        "rdrp_contigs"): "result/03_RDRP_identification/10_final/nr_filtered/nr_filtered_contigs.fasta",
+    ("nr_filtered",        "combined_full"): "result/03_RDRP_identification/10_final/nr_filtered/combined_full.faa",
+    ("nr_filtered_cluster", "rdrp_contigs"): "result/03_RDRP_identification/10_final/nr_filtered_cluster/nr_filtered_cluster_contigs.fasta",
+    ("nr_filtered_cluster", "combined_full"): "result/03_RDRP_identification/10_final/nr_filtered_cluster/combined_full_c90.faa",
+}
+_RDRP_STATS_OUTDIR = "result/99_tables/01_cp_table/03_RDRP_identification/10_final"
+
+# ── Merged protein/contig/cluster summary tables ──────────────────────────────
+_MERGED_OUTDIR         = "result/99_tables/3_RDRP_Summary"
+_MERGED_PROTEIN_CONTIG = _MERGED_OUTDIR + "/nr_filtered_protein_contig_cluster.tsv"
 
 
 rule all:
@@ -65,29 +94,21 @@ rule all:
         expand(_OUTDIR + "/{name}", name=_TABLES.keys()),
         _ESVIRTU_INFO_TABLE,
         _RNA_VIRUS_TABLE,
-        _RECALC_RPKMF,
         _RECALC_COUNT,
+        _RECALC_RPKMF,
         _RECALC_TPM,
-        expand(
-            _CORR_OUTDIR + "/2_spearman_analysis/{pair_type}/r{threshold}.tsv",
-            pair_type=_CORR_PAIR_TYPES,
-            threshold=_CORR_THRESHOLDS,
-        ),
-        expand(
-            _CORR_OUTDIR + "/3_spearman_analysis_RdRp_annotated/known_unknown_pair/r{threshold}.annotated.tsv",
-            threshold=_CORR_THRESHOLDS,
-        ),
-        expand(
-            _CORR_OUTDIR_TPM + "/2_spearman_analysis/{pair_type}/r{threshold}.tsv",
-            pair_type=_CORR_PAIR_TYPES,
-            threshold=_CORR_THRESHOLDS,
-        ),
-        expand(
-            _CORR_OUTDIR_TPM + "/3_spearman_analysis_RdRp_annotated/known_unknown_pair/r{threshold}.annotated.tsv",
-            threshold=_CORR_THRESHOLDS,
-        ),
-        _READ_STATS_TABLE,
-        [_SPARCC_OUTDIR + "/sparcc_pairs.tsv"] if _RUN_SPARCC else [],
+        _TAX_COUNT,
+        _TAX_RPKMF,
+        _TAX_TPM,
+        [
+            _RDRP_STATS_OUTDIR + f"/{stage}/{seqset}.fx2tab.tsv"
+            for stage, seqset in _RDRP_STAGE_FASTA
+        ],
+        [
+            _RDRP_STATS_OUTDIR + f"/{stage}/{seqset}.stats.tsv"
+            for stage, seqset in _RDRP_STAGE_FASTA
+        ],
+        _MERGED_PROTEIN_CONTIG,
 
 
 rule copy_table:
@@ -135,15 +156,15 @@ rule esvirtu_info_table:
         "python scripts/99_tables/esvirtu_info_table.py > {log.log} 2> {log.err}"
 
 
-# ── RNA virus contig table ────────────────────────────────────────────────────
+# ── RNA virus contig table (bait recovery dropped; contig_tag = RdRp evidence
+# from final_rdrp_merged.tsv first, GeNomad genome-composition fallback for
+# contigs with no RdRp hit) ────────────────────────────────────────────────────
 
 rule rna_virus_contig_table:
     input:
-        rpkmf       = ancient(_OUTDIR + "/04_modified_esvirtue_ribodetector/esvirtu_rpkmf.subspecies.tsv"),
         count_tsv   = ancient(_OUTDIR + "/04_modified_esvirtue_ribodetector/esvirtu_read_count.subspecies.tsv"),
-        rdrp_merged = ancient(_OUTDIR + "/03_RDRP_identification/all_samples_rdrp_merged.tsv"),
-        bait        = ancient(_OUTDIR + "/06_contig_bait/bait_target_map.tsv"),
-        genomad     = ancient(_OUTDIR + "/08_other_virus_identification/all_samples_virus_filter_summary.annotated.tsv")
+        rdrp_merged = ancient(_OUTDIR + "/03_RDRP_identification/10_final/final_rdrp_merged.tsv"),
+        genomad     = ancient(_OUTDIR + "/08_other_virus_identification/all_samples_virus_filter_summary.annotated.tsv"),
     output:
         _RNA_VIRUS_TABLE
     log:
@@ -162,15 +183,17 @@ rule rna_virus_contig_table:
         "python scripts/99_tables/rna_virus_contig_table.py > {log.log} 2> {log.err}"
 
 
-# ── Recalculated RPKMF (RNA virus only) ──────────────────────────────────────
+# ── Recalculated RNA-virus-only abundance (esvirtu ssRNA/dsRNA rows +
+# RdRpCATCH/LucaProt contig rows, RPKMF and TPM recomputed from combined
+# read counts) ─────────────────────────────────────────────────────────────────
 
 rule rna_virus_recalc_rpkmf:
     input:
         esvirtu = _ESVIRTU_INFO_TABLE,
-        contig  = _RNA_VIRUS_TABLE
+        contig  = _RNA_VIRUS_TABLE,
     output:
-        rpkmf     = _RECALC_RPKMF,
         count_tsv = _RECALC_COUNT,
+        rpkmf     = _RECALC_RPKMF,
         tpm       = _RECALC_TPM,
     log:
         log = _LOG_DIR + "/rna_virus_recalc_rpkmf.log",
@@ -188,129 +211,91 @@ rule rna_virus_recalc_rpkmf:
         "python scripts/99_tables/rna_virus_recalc_rpkmf.py > {log.log} 2> {log.err}"
 
 
-# ── Recalculated correlation (RNA virus only) ─────────────────────────────────
+# ── seqkit fx2tab (per-sequence: name, length, GC%) + stats (per-file summary)
+# for the 03_RDRP_identification 10_final all/nr_filtered/nr_filtered_cluster
+# contig + protein FASTA outputs ──────────────────────────────────────────────
 
-rule recalc_spearman_and_filter:
+rule rdrp_fasta_fx2tab:
     input:
-        table = _RECALC_RPKMF,
-        tpm   = _RECALC_TPM
+        fasta = lambda wc: ancient(_RDRP_STAGE_FASTA[(wc.stage, wc.seqset)]),
     output:
-        expand(
-            _CORR_OUTDIR + "/2_spearman_analysis/{pair_type}/r{threshold}.tsv",
-            pair_type=_CORR_PAIR_TYPES,
-            threshold=_CORR_THRESHOLDS,
-        ),
-        expand(
-            _CORR_OUTDIR_TPM + "/2_spearman_analysis/{pair_type}/r{threshold}.tsv",
-            pair_type=_CORR_PAIR_TYPES,
-            threshold=_CORR_THRESHOLDS,
-        ),
-    log:
-        out = _LOG_DIR + "/6_recalc_correlation/spearman_all_vs_all.log",
-        err = _LOG_DIR + "/6_recalc_correlation/spearman_all_vs_all.err"
-    conda:
-        "../envs/python.yaml"
-    threads: config["correlation"]["threads"]
-    resources:
-        mem_mb_per_cpu  = config["correlation"]["memory"],
-        runtime         = config["correlation"]["runtime"],
-        cpus_per_task   = config["correlation"]["threads"],
-        slurm_partition = config["correlation"]["partition"],
-        slurm_account   = config["correlation"]["account"],
-    params:
-        all_vs_all      = _CORR_OUTDIR     + "/1_all_vs_all/rna_virus.all_vs_all.spearman.filtered.tsv",
-        pair_outdir     = _CORR_OUTDIR     + "/2_spearman_analysis",
-        all_vs_all_tpm  = _CORR_OUTDIR_TPM + "/1_all_vs_all/rna_virus.all_vs_all.spearman.filtered.tsv",
-        pair_outdir_tpm = _CORR_OUTDIR_TPM + "/2_spearman_analysis",
-    shell:
-        """
-        mkdir -p $(dirname {params.all_vs_all}) {params.pair_outdir}
-        python scripts/99_tables/06_recalc_correlation/spearman_all_vs_all.py \
-            --input            {input.table} \
-            --output-filtered  {params.all_vs_all} \
-            --min-samples      {config[correlation][min_samples]} \
-            --thresholds       {config[correlation][thresholds]} \
-            --p-threshold      {config[correlation][p_threshold]} \
-            --chunk-size       {config[correlation][chunk_size_all_vs_all]} \
-            --threads          {threads} \
-            > {log.out} 2> {log.err}
-        python scripts/99_tables/06_recalc_correlation/filter_spearman_pairs.py \
-            --input  {params.all_vs_all} \
-            --outdir {params.pair_outdir} \
-            2>> {log.err}
-
-        mkdir -p $(dirname {params.all_vs_all_tpm}) {params.pair_outdir_tpm}
-        python scripts/99_tables/06_recalc_correlation/spearman_all_vs_all.py \
-            --input            {input.tpm} \
-            --value-suffix     _tpm \
-            --output-filtered  {params.all_vs_all_tpm} \
-            --min-samples      {config[correlation][min_samples]} \
-            --thresholds       {config[correlation][thresholds]} \
-            --p-threshold      {config[correlation][p_threshold]} \
-            --chunk-size       {config[correlation][chunk_size_all_vs_all]} \
-            --threads          {threads} \
-            >> {log.out} 2>> {log.err}
-        python scripts/99_tables/06_recalc_correlation/filter_spearman_pairs.py \
-            --input  {params.all_vs_all_tpm} \
-            --outdir {params.pair_outdir_tpm} \
-            2>> {log.err}
-        """
-
-
-rule recalc_annotate_rdrp_category:
-    input:
-        ku_tsv       = _CORR_OUTDIR     + "/2_spearman_analysis/known_unknown_pair/r{threshold}.tsv",
-        ku_tsv_tpm   = _CORR_OUTDIR_TPM + "/2_spearman_analysis/known_unknown_pair/r{threshold}.tsv",
-        contig_table = _RNA_VIRUS_TABLE,
-    output:
-        annotated     = _CORR_OUTDIR     + "/3_spearman_analysis_RdRp_annotated/known_unknown_pair/r{threshold}.annotated.tsv",
-        annotated_tpm = _CORR_OUTDIR_TPM + "/3_spearman_analysis_RdRp_annotated/known_unknown_pair/r{threshold}.annotated.tsv",
+        tsv = _RDRP_STATS_OUTDIR + "/{stage}/{seqset}.fx2tab.tsv",
     wildcard_constraints:
-        threshold = "0\\.6|0\\.7|0\\.8|0\\.9"
+        stage  = "all|nr_filtered|nr_filtered_cluster",
+        seqset = "rdrp_contigs|combined_full",
     log:
-        err = _LOG_DIR + "/6_recalc_correlation/annotate_r{threshold}.err"
-    conda:
-        "../envs/python.yaml"
-    threads: config["small_job"]["threads"]
-    resources:
-        mem_mb_per_cpu  = config["small_job"]["memory"],
-        runtime         = config["small_job"]["runtime"],
-        cpus_per_task   = config["small_job"]["threads"],
-        slurm_partition = config["small_job"]["partition"],
-        slurm_account   = config["small_job"]["account"],
-    shell:
-        """
-        mkdir -p $(dirname {output.annotated})
-        python scripts/99_tables/06_recalc_correlation/annotate_rdrp_category.py \
-            --input          {input.ku_tsv} \
-            --output         {output.annotated} \
-            --contig-table   {input.contig_table} \
-            2> {log.err}
-
-        mkdir -p $(dirname {output.annotated_tpm})
-        python scripts/99_tables/06_recalc_correlation/annotate_rdrp_category.py \
-            --input          {input.ku_tsv_tpm} \
-            --output         {output.annotated_tpm} \
-            --contig-table   {input.contig_table} \
-            2>> {log.err}
-        """
-
-
-# ── Per-sample read statistics (after fastp and after ribodetector) ───────────
-
-rule sample_read_stats:
-    input:
-        fastp_r1 = expand(_FASTP_DIR + "/{sample}/{sample}_1P.fq.gz", sample=_SAMPLES),
-        fastp_r2 = expand(_FASTP_DIR + "/{sample}/{sample}_2P.fq.gz", sample=_SAMPLES),
-        ribo_r1  = expand(_RIBODETECTOR_DIR + "/{sample}/{sample}_nonrrna.1.fq.gz", sample=_SAMPLES),
-        ribo_r2  = expand(_RIBODETECTOR_DIR + "/{sample}/{sample}_nonrrna.2.fq.gz", sample=_SAMPLES),
-    output:
-        _READ_STATS_TABLE,
-    log:
-        out = _LOG_DIR + "/sample_read_stats.log",
-        err = _LOG_DIR + "/sample_read_stats.err",
+        err = "log/99_tables/03_RDRP_identification/10_final/{stage}/{seqset}.fx2tab.err",
     conda:
         "../envs/seqkit-spade.yaml"
+    threads: config["seqkit"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["seqkit"]["memory"],
+        runtime         = config["seqkit"]["runtime"],
+        cpus_per_task   = config["seqkit"]["threads"],
+        slurm_partition = config["seqkit"]["partition"],
+        slurm_account   = config["seqkit"]["account"],
+    shell:
+        """
+        mkdir -p $(dirname {output.tsv}) $(dirname {log.err})
+        echo -e "seq_id\tlength\tGC" > {output.tsv}
+        seqkit fx2tab \
+            --name --only-id --length --gc \
+            --threads {threads} \
+            {input.fasta} \
+            >> {output.tsv} \
+            2> {log.err}
+        """
+
+
+rule rdrp_fasta_stats:
+    input:
+        fasta = lambda wc: ancient(_RDRP_STAGE_FASTA[(wc.stage, wc.seqset)]),
+    output:
+        tsv = _RDRP_STATS_OUTDIR + "/{stage}/{seqset}.stats.tsv",
+    wildcard_constraints:
+        stage  = "all|nr_filtered|nr_filtered_cluster",
+        seqset = "rdrp_contigs|combined_full",
+    log:
+        err = "log/99_tables/03_RDRP_identification/10_final/{stage}/{seqset}.stats.err",
+    conda:
+        "../envs/seqkit-spade.yaml"
+    threads: config["seqkit"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["seqkit"]["memory"],
+        runtime         = config["seqkit"]["runtime"],
+        cpus_per_task   = config["seqkit"]["threads"],
+        slurm_partition = config["seqkit"]["partition"],
+        slurm_account   = config["seqkit"]["account"],
+    shell:
+        """
+        mkdir -p $(dirname {output.tsv}) $(dirname {log.err})
+        seqkit stats -a --tabular \
+            --threads {threads} \
+            {input.fasta} \
+            > {output.tsv} \
+            2> {log.err}
+        """
+
+
+# ── Merge protein/contig/cluster info into one summary table ─────────────────
+# Uses the 01_cp_table copies as input (not the original 03_RDRP_identification
+# result paths) so this rule only depends on files already staged into
+# 99_tables, per the user's instruction.
+
+rule merge_rdrp_cluster_info:
+    input:
+        protein     = ancient(_RDRP_STATS_OUTDIR + "/nr_filtered/combined_full.fx2tab.tsv"),
+        contig      = ancient(_RDRP_STATS_OUTDIR + "/nr_filtered/rdrp_contigs.fx2tab.tsv"),
+        clstr       = ancient(_OUTDIR + "/03_RDRP_identification/10_final/nr_filtered_cluster/combined_full_c90.faa.clstr"),
+        tophit      = ancient(_OUTDIR + "/03_RDRP_identification/21_taxonomic_assignment_cluster/full_length/full_length_diamond_rvmt_tophit.tsv"),
+        rdrp_merged = ancient(_OUTDIR + "/03_RDRP_identification/10_final/final_rdrp_merged.tsv"),
+    output:
+        protein_contig = _MERGED_PROTEIN_CONTIG,
+    log:
+        log = "log/99_tables/3_RDRP_Summary/merge_rdrp_cluster_info.log",
+        err = "log/99_tables/3_RDRP_Summary/merge_rdrp_cluster_info.err",
+    conda:
+        "../envs/python.yaml"
     threads: config["small_job"]["threads"]
     resources:
         mem_mb_per_cpu  = config["small_job"]["memory"],
@@ -318,173 +303,34 @@ rule sample_read_stats:
         cpus_per_task   = config["small_job"]["threads"],
         slurm_partition = config["small_job"]["partition"],
         slurm_account   = config["small_job"]["account"],
-    params:
-        fastp_dir = _FASTP_DIR,
-        ribo_dir  = _RIBODETECTOR_DIR,
-        samples   = _SAMPLES,
     shell:
-        """
-        mkdir -p {_READ_STATS_OUTDIR} log/99_tables
-
-        # header
-        echo -e "sample\tfastp_R1\tfastp_R2\tfastp_total\tribodetector_R1\tribodetector_R2\tribodetector_total" > {output}
-
-        for sample in {params.samples}; do
-            fastp_r1={params.fastp_dir}/${{sample}}/${{sample}}_1P.fq.gz
-            fastp_r2={params.fastp_dir}/${{sample}}/${{sample}}_2P.fq.gz
-            ribo_r1={params.ribo_dir}/${{sample}}/${{sample}}_nonrrna.1.fq.gz
-            ribo_r2={params.ribo_dir}/${{sample}}/${{sample}}_nonrrna.2.fq.gz
-
-            fp_r1=$(seqkit stats -j {threads} "$fastp_r1" 2>/dev/null | awk 'NR==2 {{print $4}}' | tr -d ',')
-            fp_r2=$(seqkit stats -j {threads} "$fastp_r2" 2>/dev/null | awk 'NR==2 {{print $4}}' | tr -d ',')
-            fp_total=$((fp_r1 + fp_r2))
-
-            rb_r1=$(seqkit stats -j {threads} "$ribo_r1" 2>/dev/null | awk 'NR==2 {{print $4}}' | tr -d ',')
-            rb_r2=$(seqkit stats -j {threads} "$ribo_r2" 2>/dev/null | awk 'NR==2 {{print $4}}' | tr -d ',')
-            rb_total=$((rb_r1 + rb_r2))
-
-            echo -e "${{sample}}\t${{fp_r1}}\t${{fp_r2}}\t${{fp_total}}\t${{rb_r1}}\t${{rb_r2}}\t${{rb_total}}"
-        done >> {output}
-
-        echo "Done: $(wc -l < {output}) samples" > {log.out}
-        """
+        "python scripts/99_tables/merge_rdrp_cluster_info.py > {log.log} 2> {log.err}"
 
 
-# ── SparCC (via FastSpar) correlation on read counts ─────────────────────────
+# ── Annotate recalculated RNA-virus tables with RVMT taxonomy (contig rows
+# only; esvirtu rows keep their own existing taxonomy untouched) ─────────────
 
-if _RUN_SPARCC:
-
-    rule sparcc_prepare:
-        input:
-            counts = ancient(_RECALC_COUNT),
-            script = config["scripts"]["prepare_fastspar_input"],
-        output:
-            otu = _SPARCC_OUTDIR + "/otu_table.tsv",
-        params:
-            min_samples_others = config["fastspar"]["min_samples_others"],
-        log:
-            err = _LOG_DIR + "/sparcc/prepare.err",
-        conda:
-            "../envs/python.yaml"
-        threads: config["small_job"]["threads"]
-        resources:
-            mem_mb_per_cpu  = config["small_job"]["memory"],
-            runtime         = config["small_job"]["runtime"],
-            cpus_per_task   = config["small_job"]["threads"],
-            slurm_partition = config["small_job"]["partition"],
-            slurm_account   = config["small_job"]["account"],
-        shell:
-            """
-            mkdir -p {_SPARCC_OUTDIR} log/99_tables/sparcc
-            python {input.script} \
-                --input              {input.counts} \
-                --output             {output.otu} \
-                --min-samples-others {params.min_samples_others} \
-                2> {log.err}
-            """
-
-    rule sparcc_run:
-        input:
-            otu = _SPARCC_OUTDIR + "/otu_table.tsv",
-        output:
-            corr = _SPARCC_OUTDIR + "/correlation.tsv",
-            cov  = _SPARCC_OUTDIR + "/covariance.tsv",
-            pval = _SPARCC_OUTDIR + "/pvalues.tsv",
-        params:
-            outdir     = _SPARCC_OUTDIR,
-            iterations = config["fastspar"]["iterations"],
-            exclude_it = config["fastspar"]["exclude_iterations"],
-            threshold  = config["fastspar"]["threshold"],
-            bootstraps = config["fastspar"]["bootstraps"],
-        log:
-            out = _LOG_DIR + "/sparcc/fastspar.log",
-            err = _LOG_DIR + "/sparcc/fastspar.err",
-        conda:
-            "../envs/fastspar.yaml"
-        threads: config["fastspar"]["threads"]
-        resources:
-            mem_mb_per_cpu  = config["fastspar"]["memory"],
-            runtime         = config["fastspar"]["runtime"],
-            cpus_per_task   = config["fastspar"]["threads"],
-            slurm_partition = config["fastspar"]["partition"],
-            slurm_account   = config["fastspar"]["account"],
-        shell:
-            """
-            mkdir -p {params.outdir}/bootstraps_counts \
-                     {params.outdir}/bootstraps_correlation \
-                     log/99_tables/sparcc
-
-            fastspar \
-                --otu_table  {input.otu} \
-                --correlation {output.corr} \
-                --covariance  {output.cov} \
-                --iterations  {params.iterations} \
-                -x {params.exclude_it} \
-                --threshold   {params.threshold} \
-                --threads     {threads} \
-                > {log.out} 2> {log.err}
-
-            fastspar_bootstrap \
-                --otu_table  {input.otu} \
-                --number     {params.bootstraps} \
-                --prefix     {params.outdir}/bootstraps_counts/bootstrap \
-                --threads    {threads} \
-                >> {log.out} 2>> {log.err}
-
-            # Bootstrap correlations: sequential, each fastspar uses --threads internally
-            for f in {params.outdir}/bootstraps_counts/bootstrap_*.tsv; do
-                base=$(basename "$f" .tsv)
-                fastspar \
-                    --otu_table "$f" \
-                    --correlation {params.outdir}/bootstraps_correlation/cor_${{base}}.tsv \
-                    --covariance  {params.outdir}/bootstraps_correlation/cov_${{base}}.tsv \
-                    --iterations {params.iterations} \
-                    -x {params.exclude_it} \
-                    --threshold {params.threshold} \
-                    --threads {threads} --yes \
-                    >> {log.out} 2>> {log.err}
-            done
-
-            fastspar_pvalues \
-                --otu_table      {input.otu} \
-                --correlation    {output.corr} \
-                --prefix         {params.outdir}/bootstraps_correlation/cor_bootstrap_ \
-                --permutations   {params.bootstraps} \
-                --outfile        {output.pval} \
-                --threads        {threads} \
-                >> {log.out} 2>> {log.err}
-            """
-
-    rule sparcc_parse:
-        input:
-            corr   = _SPARCC_OUTDIR + "/correlation.tsv",
-            pval   = _SPARCC_OUTDIR + "/pvalues.tsv",
-            script = config["scripts"]["parse_fastspar_output"],
-        output:
-            pairs = _SPARCC_OUTDIR + "/sparcc_pairs.tsv",
-        params:
-            thresholds  = config["fastspar"]["r_threshold"],
-            r_min       = config["fastspar"]["r_min"],
-            p_threshold = config["fastspar"]["p_threshold"],
-        log:
-            err = _LOG_DIR + "/sparcc/parse.err",
-        conda:
-            "../envs/python.yaml"
-        threads: config["small_job"]["threads"]
-        resources:
-            mem_mb_per_cpu  = config["small_job"]["memory"],
-            runtime         = config["small_job"]["runtime"],
-            cpus_per_task   = config["small_job"]["threads"],
-            slurm_partition = config["small_job"]["partition"],
-            slurm_account   = config["small_job"]["account"],
-        shell:
-            """
-            python {input.script} \
-                --correlation {input.corr} \
-                --pvalues     {input.pval} \
-                --output      {output.pairs} \
-                --thresholds  {params.thresholds} \
-                --r-threshold {params.r_min} \
-                --p-threshold {params.p_threshold} \
-                2> {log.err}
-            """
+rule annotate_rna_virus_taxonomy:
+    input:
+        count_tsv      = _RECALC_COUNT,
+        rpkmf          = _RECALC_RPKMF,
+        tpm            = _RECALC_TPM,
+        protein_contig = ancient(_MERGED_PROTEIN_CONTIG),
+    output:
+        count_tsv = _TAX_COUNT,
+        rpkmf     = _TAX_RPKMF,
+        tpm       = _TAX_TPM,
+    log:
+        log = _LOG_DIR + "/annotate_rna_virus_taxonomy.log",
+        err = _LOG_DIR + "/annotate_rna_virus_taxonomy.err"
+    conda:
+        "../envs/python.yaml"
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        "python scripts/99_tables/annotate_rna_virus_taxonomy.py > {log.log} 2> {log.err}"

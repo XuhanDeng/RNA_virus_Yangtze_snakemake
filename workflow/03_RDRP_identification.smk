@@ -156,6 +156,9 @@ rule all:
         _CLUSTER_DIR + "/combined_full_c90.faa",
         _CLUSTER_DIR + "/combined_palm_core_c90.faa",
         _CLUSTER_DIR + "/combined_palm_extended_c90.faa",
+        _FINAL_DIR + "/all/all_rdrp_contigs.fasta",
+        _FINAL_DIR + "/nr_filtered/nr_filtered_contigs.fasta",
+        _CLUSTER_DIR + "/nr_filtered_cluster_contigs.fasta",
         _TAXDIR21 + "/full_length/full_length_diamond_rvmt_annotated.tsv",
         _TAXDIR21 + "/full_length/full_length_diamond_rvmt_tophit.tsv",
         expand(_PHYLUM_DIR + "/{query}_phylum", query=list(_CLUSTER_TAX_QUERIES.keys())),
@@ -1893,6 +1896,101 @@ rule cluster_rdrp_proteins_palm:
             > {_CLUSTER_DIR}/{wildcards.palmset}_c90_ids.txt
         seqkit grep -f {_CLUSTER_DIR}/{wildcards.palmset}_c90_ids.txt \
             {input.faa} -o {output.faa} \
+            > {log.out} 2> {log.err}
+        """
+
+
+# ── Step 20b: nucleotide contig mirrors of the all/nr_filtered/cluster funnel ─
+# The all/nr_filtered/nr_filtered_cluster protein funnel above has no
+# nucleotide-contig counterpart -- these three rules add one, reusing the IDs
+# already established at each stage rather than re-deriving them:
+#   all/all_rdrp_contigs.fasta            -- every contig with an RdRp hit,
+#                                             unfiltered (mirrors 5_RdRp_contig/
+#                                             any_rdrp.fasta, combined RC+LP)
+#   nr_filtered/nr_filtered_contigs.fasta -- NR-confirmed contigs only
+#                                             (mirrors the existing top-level
+#                                             final_contigs.fasta from Step 10 --
+#                                             not moved, just copied here for
+#                                             consistency with the other
+#                                             nr_filtered/ outputs)
+#   nr_filtered_cluster/..._contigs.fasta -- contigs matching the CD-HIT
+#                                             cluster-representative protein
+#                                             IDs from Step 20 (combined_full_c90.faa),
+#                                             converted to their parent contig ID
+#                                             the same way make_final_output.py's
+#                                             to_contig() does (strip ORF\d+_
+#                                             prefix, truncate at first ':',
+#                                             strip trailing _frame=...)
+
+rule all_rdrp_contigs:
+    input:
+        fasta = _CONTIG_DIR + "/any_rdrp.fasta",
+    output:
+        fasta = _FINAL_DIR + "/all/all_rdrp_contigs.fasta",
+    log:
+        err = "log/03_RDRP_identification/10_final/all_rdrp_contigs.err",
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        """
+        mkdir -p {_FINAL_DIR}/all log/03_RDRP_identification/10_final
+        cp {input.fasta} {output.fasta} 2> {log.err}
+        """
+
+
+rule nr_filtered_contigs:
+    input:
+        fasta = _FINAL_DIR + "/final_contigs.fasta",
+    output:
+        fasta = _FINAL_DIR + "/nr_filtered/nr_filtered_contigs.fasta",
+    log:
+        err = "log/03_RDRP_identification/10_final/nr_filtered_contigs.err",
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        """
+        mkdir -p {_FINAL_DIR}/nr_filtered log/03_RDRP_identification/10_final
+        cp {input.fasta} {output.fasta} 2> {log.err}
+        """
+
+
+rule nr_filtered_cluster_contigs:
+    input:
+        full_c90 = _CLUSTER_DIR + "/combined_full_c90.faa",
+        contigs  = _FINAL_DIR + "/nr_filtered/nr_filtered_contigs.fasta",
+    output:
+        ids   = _CLUSTER_DIR + "/full_c90_contig_ids.txt",
+        fasta = _CLUSTER_DIR + "/nr_filtered_cluster_contigs.fasta",
+    conda:
+        "../envs/seqkit-spade.yaml"
+    log:
+        out = "log/03_RDRP_identification/20_cluster/nr_filtered_cluster_contigs.log",
+        err = "log/03_RDRP_identification/20_cluster/nr_filtered_cluster_contigs.err",
+    threads: config["small_job"]["threads"]
+    resources:
+        mem_mb_per_cpu  = config["small_job"]["memory"],
+        runtime         = config["small_job"]["runtime"],
+        cpus_per_task   = config["small_job"]["threads"],
+        slurm_partition = config["small_job"]["partition"],
+        slurm_account   = config["small_job"]["account"],
+    shell:
+        """
+        mkdir -p {_CLUSTER_DIR} log/03_RDRP_identification/20_cluster
+        grep '^>' {input.full_c90} | sed 's/^>//; s/ .*//' \
+            | sed -E 's/^ORF[0-9]+_//; s/:.*//; s/_frame=.*//' \
+            | sort -u > {output.ids}
+        seqkit grep -f {output.ids} \
+            {input.contigs} -o {output.fasta} \
             > {log.out} 2> {log.err}
         """
 

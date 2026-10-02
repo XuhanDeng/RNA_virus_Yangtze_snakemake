@@ -1,11 +1,19 @@
 """
-Recalculate RPKMF and TPM for RNA viruses only (5_Recalculated_RPKM_result).
+Recalculate RPKMF and TPM for RNA viruses only
+(5_Recalculated_RPKM_result/0_RDRP_Esvirtue).
+
+Combines two sources:
+  - esvirtu_info_table.tsv   -- ESvirtu-detected known viruses; kept rows are
+                                 those with genome_type in {ssRNA(+), ssRNA(-), dsRNA}.
+  - rna_virus_contig_table.tsv -- de novo contigs; kept rows are those tagged
+                                 RdRpCATCH or LucaProt (genomad_* and unknown
+                                 rows are excluded -- not RNA virus evidence).
 
 Steps:
   1. Load esvirtu_info_table.tsv; keep rows where genome_type in
      {ssRNA(+), ssRNA(-), dsRNA}. Drop old *_RPKMF columns.
-  2. Load rna_virus_contig_table.tsv; keep rows where contig_tag is one of
-     the exact RNA-virus tags. Drop old *_RPKMF columns.
+  2. Load rna_virus_contig_table.tsv; keep rows where contig_tag is
+     RdRpCATCH or LucaProt.
   3. Rename row-ID columns to seq_id; add source column; concat into one table.
      All metadata columns from both tables are retained (NA where absent).
   4. Recalculate RPKMF per sample using the combined RNA-virus read counts:
@@ -18,6 +26,10 @@ Steps:
        rna_virus_recalc_rpkmf.tsv       — same but sample cols replaced by RPKMF
        rna_virus_recalc_tpm.tsv         — same but sample cols replaced by TPM
 
+RVMT taxonomy is NOT joined here -- see annotate_rna_virus_taxonomy.py, which
+reads these three outputs and writes taxonomy-annotated copies to
+5_Recalculated_RPKM_result/1_taxonmy/.
+
 Usage:
     python scripts/99_tables/rna_virus_recalc_rpkmf.py
 """
@@ -27,19 +39,15 @@ import pandas as pd
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 ESVIRTU_TSV   = "result/99_tables/2_esvirtu_table/esvirtu_info_table.tsv"
-CONTIG_TSV    = "result/99_tables/3_RNA_virus_table/rna_virus_contig_table.tsv"
-OUTDIR        = "result/99_tables/5_Recalculated_RPKM_result"
+CONTIG_TSV    = "result/99_tables/4_contig_tag_abundance/rna_virus_contig_table.tsv"
+OUTDIR        = "result/99_tables/5_Recalculated_RPKM_result/0_RDRP_Esvirtue"
 OUT_COUNT     = OUTDIR + "/rna_virus_recalc_read_count.tsv"
 OUT_RPKMF     = OUTDIR + "/rna_virus_recalc_rpkmf.tsv"
 OUT_TPM       = OUTDIR + "/rna_virus_recalc_tpm.tsv"
 
 # ── filters ───────────────────────────────────────────────────────────────────
 RNA_GENOME_TYPES = {"ssRNA(+)", "ssRNA(-)", "dsRNA"}
-
-RNA_CONTIG_TAGS = {
-    "RdRpCATCH", "LucaProt",
-    "bait_RdRpCATCH", "bait_LucaProt", "bait_RVMT",
-}
+RNA_CONTIG_TAGS  = {"RdRpCATCH", "LucaProt"}
 
 
 # =============================================================================
@@ -64,9 +72,6 @@ def load_contigs(path):
     before = len(df)
     df = df[df["contig_tag"].isin(RNA_CONTIG_TAGS)].reset_index(drop=True)
     print(f"  Contigs: kept {len(df)} RNA-virus rows (removed {before - len(df)}).")
-
-    rpkmf_cols = [c for c in df.columns if c.endswith("_RPKMF")]
-    df = df.drop(columns=rpkmf_cols)
 
     df = df.rename(columns={"contig_id": "seq_id"})
     if "source" not in df.columns:
@@ -126,7 +131,7 @@ def main():
     print("Loading ESvirtu RNA virus rows...")
     esvirtu = load_esvirtu(ESVIRTU_TSV)
 
-    print("Loading RNA virus contig rows (all: RdRpCATCH, LucaProt, bait_*)...")
+    print("Loading RNA virus contig rows (RdRpCATCH, LucaProt only)...")
     contigs = load_contigs(CONTIG_TSV)
 
     print("Combining tables...")

@@ -262,7 +262,7 @@ if config["rdrp_tree"]["full_length"]:
             if os.path.exists(part):
                 files.append(part)
         if wc.rank == "phylum" and wc.taxon in _outgroup_phylum_map():
-            files.append(_OUTDIR + f"/1_outgroup/{wc.taxon}.faa")
+            files.append(_OUTDIR + f"/1_outgroup/full_length/{wc.taxon}.faa")
         return files
 
 
@@ -308,13 +308,13 @@ if config["rdrp_tree"]["full_length"]:
         input:
             ref = outgroup_ref_source,
         output:
-            fasta = _OUTDIR + "/1_outgroup/{taxon}.faa",
+            fasta = _OUTDIR + "/1_outgroup/full_length/{taxon}.faa",
         wildcard_constraints:
             taxon = "|".join(_KNOWN_PHYLA),
         conda:
             "../envs/mafft_hmmer_seqkit.yaml"
         log:
-            err = "log/101b_RDRP_phylum_tree/1_outgroup/{taxon}.err",
+            err = "log/101b_RDRP_phylum_tree/1_outgroup/full_length_{taxon}.err",
         params:
             n = N_OUTGROUP,
         threads: config["small_job"]["threads"]

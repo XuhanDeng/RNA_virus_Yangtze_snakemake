@@ -505,6 +505,61 @@ echo "PID: $!"
 
 
 # ============================================================
+# 09_RDRP_strcture.smk
+# Run after 03_RDRP_identification.smk, 03b, and 03c (through the new
+# combine_ref_full_length rule) are complete, and after 00_alphafold3.smk
+# has finished (sif + weights + databases).
+# Two-pass: list_batches must run once before rule all can discover the
+# full set of batched AF3 structure-prediction targets (same pattern as
+# 03c_ref_palm_annot.smk / 101b_RDRP_phylum_tree.smk). Sequences are grouped
+# into batches of alphafold3.batch_size (config/config.yaml) and both the
+# CPU data-pipeline stage and the GPU inference stage run one AF3
+# --input_dir call per batch, not one call per sequence.
+# ============================================================
+
+# pass 1: stage inputs + group into batches + list batch names
+
+# dry-run (pass 2, now shows the full AF3 job list)
+snakemake --snakefile workflow/09_RDRP_strcture.smk --use-conda --cores 4 --rerun-triggers input -n -p
+
+# unlock
+snakemake --snakefile workflow/09_RDRP_strcture.smk --unlock
+
+# formal run (GPU partition, keep --jobs modest -- each batch job runs up
+# to BATCH_SIZE sequences through AF3, so fewer, longer jobs than before)
+mkdir -p log/09_RDRP_structure
+nohup snakemake --snakefile workflow/09_RDRP_strcture.smk \
+    --executor slurm \
+    --jobs 52 \
+    --use-conda \
+    --retries 1 \
+    --printshellcmds \
+    --slurm-no-account \
+    --rerun-triggers input \
+    --latency-wait 20 \
+    --keep-going \
+    --until alphafold3_data_pipeline\
+    > log/09_RDRP_structure/snakemake.log 2>&1 &
+echo "PID: $!"
+
+# data-pipeline only (CPU stage, run ahead of GPU inference if desired)
+mkdir -p log/09_RDRP_structure
+nohup snakemake --snakefile workflow/09_RDRP_strcture.smk \
+    --executor slurm \
+    --jobs 64 \
+    --use-conda \
+    --retries 0 \
+    --printshellcmds \
+    --slurm-no-account \
+    --rerun-triggers input \
+    --latency-wait 60 \
+    --keep-going \
+    --until alphafold3_data_pipeline \
+    > log/09_RDRP_structure/snakemake_data_pipeline.log 2>&1 &
+echo "PID: $!"
+
+
+# ============================================================
 # 99_tables.smk
 # Run on login node after all upstream workflows are complete
 # ============================================================
